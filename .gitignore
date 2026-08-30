@@ -1,0 +1,28 @@
+# ============================================================
+# Graystone AI Stores
+# ============================================================
+
+# The Vault contains reconstructed/downloaded artifacts.
+# It must never be committed to Git.
+/vault/
+
+# ------------------------------------------------------------
+# Transitional artifact locations
+#
+# These are the current artifact roots and will eventually move
+# beneath vault/. Keep ignored until that migration is complete.
+# ------------------------------------------------------------
+/linux/
+/github/
+/node/
+/python/
+
+# Local runtime / temporary files
+*.log
+*.tmp
+*.lock
+__pycache__/
+*.pyc
+
+# Ansible local state
+*.retry
