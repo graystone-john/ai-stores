@@ -1,0 +1,37 @@
+---
+- name: Record Aider PyPI acquisition start
+  ansible.builtin.set_fact:
+    aider_pypi_start_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    aider_pypi_start_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report Aider PyPI acquisition start
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: aider-chat 0.86.2 recursive PyPI acquisition
+      started at {{ aider_pypi_start_time }}.
+
+- name: Acquire Aider 0.86.2 recursive PyPI closure
+  ansible.builtin.command:
+    cmd: >-
+      {{ playbook_dir }}/../../modules/python/pypi/aider-chat/0.86.2/scripts/acquire
+  register: aider_pypi_acquire
+  changed_when: "'AI Stores: acquired and verified:' in aider_pypi_acquire.stdout"
+
+- name: Record Aider PyPI acquisition completion
+  ansible.builtin.set_fact:
+    aider_pypi_end_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    aider_pypi_end_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report Aider PyPI acquisition completion
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: aider-chat 0.86.2 PyPI acquisition completed at
+      {{ aider_pypi_end_time }}.
+      Elapsed: {{
+        (aider_pypi_end_epoch | int) -
+        (aider_pypi_start_epoch | int)
+      }} seconds.
+
+- name: Report Aider PyPI acquisition
+  ansible.builtin.debug:
+    var: aider_pypi_acquire.stdout_lines

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(cd "${MODULE_DIR}/../../../../../../.." && pwd)"
+
+CLOSURE="${MODULE_DIR}/amd64-closure.tsv"
+APT_ROOT="${STORE_ROOT}/vault/linux/ubuntu/apt"
+POOL="${APT_ROOT}/pool/main"
+REBUILD="${STORE_ROOT}/modules/linux/ubuntu/scripts/rebuild-apt-repository"
+
+for cmd in curl sha256sum stat dpkg-deb; do
+    command -v "$cmd" >/dev/null || {
+        echo "ERROR: required command missing: $cmd" >&2
+        exit 1
+    }
+done
+
+mkdir -p "${POOL}"
+
+echo "=== UBUNTU NOBLE PYTHON 3.12 VENV CLOSURE ==="
+
+tail -n +2 "${CLOSURE}" |
+while IFS=$'\t' read -r package version architecture url filename size sha256; do
+    target="${POOL}/${filename}"
+    temp="${target}.tmp"
+
+    valid=0
+
+    if [[ -f "${target}" ]]; then
+        actual_size="$(stat -c '%s' "${target}")"
+        actual_sha="$(sha256sum "${target}" | awk '{print $1}')"
+        actual_package="$(dpkg-deb -f "${target}" Package)"
+        actual_version="$(dpkg-deb -f "${target}" Version)"
+        actual_arch="$(dpkg-deb -f "${target}" Architecture)"
+
+        if [[ "${actual_size}" == "${size}" ]] &&
+           [[ "${actual_sha}" == "${sha256}" ]] &&
+           [[ "${actual_package}" == "${package}" ]] &&
+           [[ "${actual_version}" == "${version}" ]] &&
+           [[ "${actual_arch}" == "${architecture}" ]]; then
+            valid=1
+        fi
+    fi
+
+    if [[ "${valid}" -eq 1 ]]; then
+        echo "AI Stores: already valid: ${package}=${version} [${architecture}]"
+        continue
+    fi
+
+    rm -f "${target}" "${temp}"
+
+    echo "AI Stores: acquiring ${package}=${version} [${architecture}]"
+
+    curl \
+      --fail \
+      --location \
+      --retry 5 \
+      --retry-delay 5 \
+      "${url}" \
+      --output "${temp}"
+
+    actual_size="$(stat -c '%s' "${temp}")"
+    actual_sha="$(sha256sum "${temp}" | awk '{print $1}')"
+    actual_package="$(dpkg-deb -f "${temp}" Package)"
+    actual_version="$(dpkg-deb -f "${temp}" Version)"
+    actual_arch="$(dpkg-deb -f "${temp}" Architecture)"
+
+    [[ "${actual_size}" == "${size}" ]] || {
+        echo "ERROR: size mismatch for ${filename}" >&2
+        exit 1
+    }
+
+    [[ "${actual_sha}" == "${sha256}" ]] || {
+        echo "ERROR: SHA-256 mismatch for ${filename}" >&2
+        echo "expected: ${sha256}" >&2
+        echo "actual:   ${actual_sha}" >&2
+        exit 1
+    }
+
+    [[ "${actual_package}" == "${package}" ]] || {
+        echo "ERROR: package identity mismatch for ${filename}" >&2
+        exit 1
+    }
+
+    [[ "${actual_version}" == "${version}" ]] || {
+        echo "ERROR: package version mismatch for ${filename}" >&2
+        exit 1
+    }
+
+    [[ "${actual_arch}" == "${architecture}" ]] || {
+        echo "ERROR: package architecture mismatch for ${filename}" >&2
+        exit 1
+    }
+
+    mv "${temp}" "${target}"
+
+    echo "AI Stores: acquired and verified: ${filename}"
+done
+
+echo
+echo "=== PRESERVED PYTHON VENV CLOSURE ==="
+
+tail -n +2 "${CLOSURE}" |
+while IFS=$'\t' read -r package version architecture url filename size sha256; do
+    sha256sum "${POOL}/${filename}"
+done
+
+echo
+"${REBUILD}"
+
+echo
+echo "AI Stores: Ubuntu Noble Python 3.12 venv closure complete"

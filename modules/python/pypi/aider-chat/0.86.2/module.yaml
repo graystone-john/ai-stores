@@ -1,0 +1,32 @@
+name: aider-chat-0.86.2
+type: curated-pypi-closure
+
+upstream:
+  ecosystem: PyPI
+  project: aider-chat
+  version: 0.86.2
+
+target:
+  python_version: "3.12"
+  implementation: cp
+  operating_system: linux
+  architecture: x86_64
+
+resolution:
+  method: pip-recursive-download
+  root_requirement: aider-chat==0.86.2
+  approved_closure: resolved-closure.tsv
+  expected_artifacts: 108
+
+acquisition:
+  preserve_upstream_artifacts: true
+  require_sha256: true
+  reject_unapproved_artifacts: true
+
+serving:
+  api: pypi-simple
+  root: vault/python/pypi
+
+consumer:
+  graystone_component: coding-tools
+  machine_family: daedalus

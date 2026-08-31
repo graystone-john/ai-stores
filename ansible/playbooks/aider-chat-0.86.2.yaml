@@ -1,0 +1,10 @@
+---
+- name: Rebuild aider-chat 0.86.2 PyPI AI Store
+  hosts: local
+  gather_facts: false
+
+  vars:
+    ai_stores_module: aider-chat-0.86.2
+
+  roles:
+    - ai-stores

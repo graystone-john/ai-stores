@@ -1,0 +1,10 @@
+---
+- name: Rebuild Ubuntu Noble Python 3.12 venv AI Store
+  hosts: local
+  gather_facts: false
+
+  vars:
+    ai_stores_module: python-venv-3.12-amd64
+
+  roles:
+    - ai-stores

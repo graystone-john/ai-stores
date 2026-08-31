@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+
+from pathlib import Path
+import csv
+import html
+import re
+import sys
+from urllib.parse import quote
+
+STORE_ROOT = Path(__file__).resolve().parent.parent
+PYPI_ROOT = STORE_ROOT / "vault/python/pypi"
+PACKAGES = PYPI_ROOT / "packages"
+SIMPLE = PYPI_ROOT / "simple"
+MODULES = STORE_ROOT / "modules/python/pypi"
+
+
+def normalize(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+if not PACKAGES.is_dir():
+    raise SystemExit(f"PyPI package store does not exist: {PACKAGES}")
+
+# Discover every curated closure contributed by every PyPI module.
+closures = sorted(MODULES.glob("*/*/resolved-closure.tsv"))
+
+if not closures:
+    raise SystemExit(f"No curated PyPI closure manifests found under: {MODULES}")
+
+projects = {}
+artifact_count = 0
+
+for closure in closures:
+    print(f"AI Stores: reading {closure.relative_to(STORE_ROOT)}")
+
+    with closure.open(newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+
+        required = {"package", "version", "filename", "sha256"}
+        fields = set(reader.fieldnames or [])
+
+        missing_fields = required - fields
+        if missing_fields:
+            raise SystemExit(
+                f"{closure}: missing required fields: "
+                + ", ".join(sorted(missing_fields))
+            )
+
+        for row in reader:
+            filename = row["filename"]
+            sha256 = row["sha256"]
+            package = normalize(row["package"])
+
+            target = PACKAGES / filename
+
+            if not target.is_file():
+                raise SystemExit(
+                    f"{closure}: missing curated artifact: {target}"
+                )
+
+            # The same artifact may be used by multiple consumers.
+            key = (filename, sha256)
+
+            projects.setdefault(package, {})[key] = row
+            artifact_count += 1
+
+
+# Build into a temporary tree so a failure never leaves a partial
+# published Simple repository.
+temporary = PYPI_ROOT / ".simple.new"
+
+if temporary.exists():
+    import shutil
+    shutil.rmtree(temporary)
+
+temporary.mkdir(parents=True)
+
+for project, artifacts in sorted(projects.items()):
+    project_dir = temporary / project
+    project_dir.mkdir(parents=True)
+
+    links = []
+
+    for (filename, sha256), row in sorted(artifacts.items()):
+        href = "../../packages/" + quote(filename) + "#sha256=" + sha256
+
+        links.append(
+            f'<a href="{html.escape(href)}">'
+            f'{html.escape(filename)}</a><br/>'
+        )
+
+    page = (
+        "<!DOCTYPE html>\n"
+        "<html><head><title>Links for "
+        + html.escape(project)
+        + "</title></head><body>\n"
+        + "\n".join(links)
+        + "\n</body></html>\n"
+    )
+
+    (project_dir / "index.html").write_text(page)
+
+
+root_links = [
+    f'<a href="{html.escape(project)}/">'
+    f'{html.escape(project)}</a><br/>'
+    for project in sorted(projects)
+]
+
+(temporary / "index.html").write_text(
+    "<!DOCTYPE html>\n"
+    "<html><body>\n"
+    + "\n".join(root_links)
+    + "\n</body></html>\n"
+)
+
+
+# Publish only after the entire new index has been constructed successfully.
+backup = PYPI_ROOT / ".simple.old"
+
+if backup.exists():
+    import shutil
+    shutil.rmtree(backup)
+
+if SIMPLE.exists():
+    SIMPLE.rename(backup)
+
+temporary.rename(SIMPLE)
+
+if backup.exists():
+    import shutil
+    shutil.rmtree(backup)
+
+
+unique_artifacts = {
+    key
+    for artifacts in projects.values()
+    for key in artifacts
+}
+
+print()
+print(
+    f"AI Stores: shared PyPI Simple index contains "
+    f"{len(projects)} projects"
+)
+print(
+    f"AI Stores: shared PyPI Simple index references "
+    f"{len(unique_artifacts)} unique curated artifacts"
+)
+print(
+    f"AI Stores: processed {len(closures)} curated closure manifests"
+)
+print("AI Stores: shared curated PyPI index complete")

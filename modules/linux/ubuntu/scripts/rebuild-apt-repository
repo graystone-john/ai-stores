@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STORE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+
+APT_ROOT="${STORE_ROOT}/vault/linux/ubuntu/apt"
+POOL="${APT_ROOT}/pool/main"
+DIST="${APT_ROOT}/dists/noble/main/binary-amd64"
+
+for cmd in dpkg-scanpackages apt-ftparchive gzip; do
+    command -v "$cmd" >/dev/null || {
+        echo "ERROR: required command missing: $cmd" >&2
+        exit 1
+    }
+done
+
+mkdir -p "$POOL" "$DIST"
+
+cd "$APT_ROOT"
+
+echo "AI Stores: rebuilding shared Ubuntu Noble APT metadata"
+
+dpkg-scanpackages --multiversion pool/main /dev/null \
+    > dists/noble/main/binary-amd64/Packages
+
+gzip -9c dists/noble/main/binary-amd64/Packages \
+    > dists/noble/main/binary-amd64/Packages.gz
+
+apt-ftparchive \
+    -o APT::FTPArchive::Release::Origin="Graystone AI Stores" \
+    -o APT::FTPArchive::Release::Label="Graystone Ubuntu Offline" \
+    -o APT::FTPArchive::Release::Suite="noble" \
+    -o APT::FTPArchive::Release::Codename="noble" \
+    -o APT::FTPArchive::Release::Architectures="amd64" \
+    -o APT::FTPArchive::Release::Components="main" \
+    release dists/noble \
+    > dists/noble/Release
+
+echo
+echo "AI Stores: shared Ubuntu repository complete"
+echo "Packages: $(grep -c '^Package:' dists/noble/main/binary-amd64/Packages)"
+echo "Size:     $(du -sh "$APT_ROOT" | awk '{print $1}')"

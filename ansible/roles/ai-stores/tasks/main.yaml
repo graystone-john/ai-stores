@@ -16,3 +16,11 @@
 - name: Build llama b10612 AI Store
   ansible.builtin.include_tasks: llama-b10612.yaml
   when: ai_stores_module == "llama-b10612"
+
+- name: Build Ubuntu Noble Python 3.12 venv AI Store
+  ansible.builtin.include_tasks: python-venv-3.12-amd64.yaml
+  when: ai_stores_module == "python-venv-3.12-amd64"
+
+- name: Build aider-chat 0.86.2 PyPI AI Store
+  ansible.builtin.include_tasks: aider-chat-0.86.2.yaml
+  when: ai_stores_module == "aider-chat-0.86.2"

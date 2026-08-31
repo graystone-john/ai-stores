@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(cd "${MODULE_DIR}/../../../../.." && pwd)"
+
+CLOSURE="${MODULE_DIR}/resolved-closure.tsv"
+PYPI_ROOT="${STORE_ROOT}/vault/python/pypi"
+PACKAGE_ROOT="${PYPI_ROOT}/packages"
+WORK="$(mktemp -d)"
+
+cleanup() {
+    rm -rf "${WORK}"
+}
+trap cleanup EXIT
+
+for cmd in python3 curl sha256sum; do
+    command -v "${cmd}" >/dev/null || {
+        echo "ERROR: required command missing: ${cmd}" >&2
+        exit 1
+    }
+done
+
+mkdir -p "${PACKAGE_ROOT}"
+
+
+# Resolution target is the supported Daedalus Python environment, not the
+# architecture of the AI Stores controller running this script.
+TARGET_OS="linux"
+TARGET_ARCH="x86_64"
+TARGET_PYTHON_VERSION="3.12"
+TARGET_PYTHON_IMPLEMENTATION="cp"
+TARGET_PYTHON_ABI="cp312"
+TARGET_GLIBC_MAJOR="2"
+TARGET_GLIBC_MINOR="39"
+
+# Generate pip-compatible manylinux tags in native preference order.
+# A glibc 2.39 system can consume wheels requiring glibc 2.39 or older.
+PIP_PLATFORM_ARGS=()
+
+for ((minor=TARGET_GLIBC_MINOR; minor>=5; minor--)); do
+    PIP_PLATFORM_ARGS+=(
+        --platform "manylinux_${TARGET_GLIBC_MAJOR}_${minor}_${TARGET_ARCH}"
+    )
+done
+
+# Legacy aliases are retained after their corresponding modern tags.
+PIP_PLATFORM_ARGS+=(
+    --platform "manylinux2014_${TARGET_ARCH}"
+    --platform "manylinux2010_${TARGET_ARCH}"
+    --platform "manylinux1_${TARGET_ARCH}"
+    --platform "linux_${TARGET_ARCH}"
+)
+
+echo "=== AIDER 0.86.2 RECURSIVE PYPI RESOLUTION ==="
+
+python3 -m venv "${WORK}/resolver"
+
+"${WORK}/resolver/bin/python" -m pip download \
+  --only-binary=:all: \
+  "${PIP_PLATFORM_ARGS[@]}" \
+  --python-version "${TARGET_PYTHON_VERSION}" \
+  --implementation "${TARGET_PYTHON_IMPLEMENTATION}" \
+  --abi "${TARGET_PYTHON_ABI}" \
+  --abi abi3 \
+  --abi none \
+  --dest "${WORK}/resolved" \
+  "aider-chat==0.86.2"
+
+echo
+echo "AI Stores: validating recursive resolver output"
+
+python3 - "${CLOSURE}" "${WORK}/resolved" <<'PY'
+import csv
+import hashlib
+import os
+import sys
+from pathlib import Path
+
+closure_path = Path(sys.argv[1])
+resolved_dir = Path(sys.argv[2])
+
+approved = {}
+
+with closure_path.open(newline="") as f:
+    reader = csv.DictReader(f, delimiter="\t")
+    for row in reader:
+        approved[row["filename"]] = row
+
+resolved = {
+    p.name: p
+    for p in resolved_dir.iterdir()
+    if p.is_file()
+}
+
+missing = sorted(set(approved) - set(resolved))
+unexpected = sorted(set(resolved) - set(approved))
+
+if missing:
+    print("ERROR: approved artifacts missing from recursive resolution:")
+    for x in missing:
+        print("  ", x)
+
+if unexpected:
+    print("ERROR: resolver selected unapproved artifacts:")
+    for x in unexpected:
+        print("  ", x)
+
+if missing or unexpected:
+    raise SystemExit(10)
+
+for filename, row in approved.items():
+    path = resolved[filename]
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    if sha != row["sha256"]:
+        print(f"ERROR: resolver artifact hash mismatch: {filename}")
+        print(f"expected: {row['sha256']}")
+        print(f"actual:   {sha}")
+        raise SystemExit(11)
+
+print(f"AI Stores: resolver closure verified: {len(approved)} artifacts")
+PY
+
+echo
+echo "=== ACQUIRING APPROVED PYPI ARTIFACTS ==="
+
+tail -n +2 "${CLOSURE}" |
+while IFS=$'\t' read -r package version filename url sha256 requested; do
+    target="${PACKAGE_ROOT}/${filename}"
+    temp="${target}.tmp"
+
+    if [[ -f "${target}" ]]; then
+        actual="$(sha256sum "${target}" | awk '{print $1}')"
+
+        if [[ "${actual}" == "${sha256}" ]]; then
+            echo "AI Stores: already valid: ${package}==${version}"
+            continue
+        fi
+
+        rm -f "${target}"
+    fi
+
+    rm -f "${temp}"
+
+    echo "AI Stores: acquiring ${package}==${version}"
+
+    curl \
+      --fail \
+      --location \
+      --retry 5 \
+      --retry-delay 5 \
+      "${url}" \
+      --output "${temp}"
+
+    actual="$(sha256sum "${temp}" | awk '{print $1}')"
+
+    if [[ "${actual}" != "${sha256}" ]]; then
+        echo "ERROR: SHA-256 mismatch: ${filename}" >&2
+        echo "expected: ${sha256}" >&2
+        echo "actual:   ${actual}" >&2
+        rm -f "${temp}"
+        exit 1
+    fi
+
+    mv "${temp}" "${target}"
+
+    echo "AI Stores: acquired and verified: ${filename}"
+done
+
+echo
+echo "=== VERIFYING PRESERVED CLOSURE ==="
+
+python3 - "${CLOSURE}" "${PACKAGE_ROOT}" <<'PY'
+import csv
+import hashlib
+import sys
+from pathlib import Path
+
+closure_path = Path(sys.argv[1])
+package_root = Path(sys.argv[2])
+
+count = 0
+
+with closure_path.open(newline="") as f:
+    reader = csv.DictReader(f, delimiter="\t")
+
+    for row in reader:
+        path = package_root / row["filename"]
+
+        if not path.is_file():
+            raise SystemExit(f"Missing preserved artifact: {path}")
+
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+
+        if sha != row["sha256"]:
+            raise SystemExit(f"Hash mismatch: {path}")
+
+        count += 1
+
+print(f"AI Stores: preserved closure verified: {count} artifacts")
+PY
+
+echo
+"${STORE_ROOT}/scripts/rebuild-pypi-index"
+
+echo
+echo "AI Stores: aider-chat 0.86.2 PyPI closure complete"

@@ -1,0 +1,37 @@
+---
+- name: Record Python 3.12 venv acquisition start
+  ansible.builtin.set_fact:
+    python_venv_start_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    python_venv_start_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report Python 3.12 venv acquisition start
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: Ubuntu Noble Python 3.12 venv closure acquisition
+      started at {{ python_venv_start_time }}.
+
+- name: Acquire Ubuntu Noble Python 3.12 venv closure
+  ansible.builtin.command:
+    cmd: >-
+      {{ playbook_dir }}/../../modules/linux/ubuntu/noble/python-venv/3.12/amd64/scripts/acquire
+  register: python_venv_acquire
+  changed_when: "'AI Stores: acquired ' in python_venv_acquire.stdout"
+
+- name: Record Python 3.12 venv acquisition completion
+  ansible.builtin.set_fact:
+    python_venv_end_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    python_venv_end_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report Python 3.12 venv acquisition completion
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: Ubuntu Noble Python 3.12 venv closure acquisition
+      completed at {{ python_venv_end_time }}.
+      Elapsed: {{
+        (python_venv_end_epoch | int) -
+        (python_venv_start_epoch | int)
+      }} seconds.
+
+- name: Report Python 3.12 venv acquisition
+  ansible.builtin.debug:
+    var: python_venv_acquire.stdout_lines

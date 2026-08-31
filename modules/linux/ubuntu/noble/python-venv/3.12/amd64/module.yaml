@@ -1,0 +1,35 @@
+name: ubuntu-noble-python-venv-3.12-amd64
+type: ubuntu-package-closure
+
+upstream:
+  distribution: Ubuntu
+  release: noble
+  architecture: amd64
+  source: Ubuntu archive
+
+capability:
+  name: python-venv
+  python_version: "3.12"
+
+root_package:
+  name: python3.12-venv
+  version: 3.12.3-1ubuntu0.16
+
+closure:
+  file: amd64-closure.tsv
+  packages: 8
+  install_recommends: false
+
+vault:
+  type: apt
+  root: vault/linux/ubuntu/apt
+
+acquisition:
+  policy: exact-package-version-closure
+  preserve_upstream_debs: true
+  regenerate_apt_metadata: true
+
+provenance:
+  resolution_platform: ubuntu-24.04-amd64
+  resolution_evidence: daedalus-01
+  resolution_method: apt-get-print-uris

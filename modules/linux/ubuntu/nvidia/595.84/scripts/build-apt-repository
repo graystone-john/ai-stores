@@ -139,10 +139,12 @@ for deb in "$POOL"/*.deb; do
         "$(dpkg-deb -f "$deb" Version)"
 done | sort -u > "$WORK/acquired.tsv"
 
-if ! diff -u "$WORK/wanted.tsv" "$WORK/acquired.tsv"; then
-    echo "ERROR: acquired package closure differs from manifest" >&2
-    exit 11
-fi
+while IFS=$'\t' read -r pkg ver; do
+    if ! grep -Fqx "$pkg"$'\t'"$ver" "$WORK/acquired.tsv"; then
+        echo "ERROR: required NVIDIA artifact missing from shared APT pool: $pkg=$ver" >&2
+        exit 11
+    fi
+done < "$WORK/wanted.tsv"
 
 mkdir -p "$DIST"
 
