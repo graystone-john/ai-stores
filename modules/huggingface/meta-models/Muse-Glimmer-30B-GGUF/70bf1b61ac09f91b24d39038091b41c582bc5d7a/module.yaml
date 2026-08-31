@@ -1,0 +1,37 @@
+name: muse-glimmer-30b-gguf-q4-k-m
+type: huggingface-model
+
+model:
+  id: meta-models/Muse-Glimmer-30B-GGUF
+  variant: Q4_K_M
+
+upstream:
+  provider: Hugging Face
+  repository: meta-models/Muse-Glimmer-30B-GGUF
+  revision: 70bf1b61ac09f91b24d39038091b41c582bc5d7a
+  acquisition: huggingface-resolve
+  policy: exact-revision
+
+artifacts:
+  - filename: Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf
+    sha256: 4cc57c0f51040a226e5a72cc47b7613f7772950e460a665f7083de89f183f60e
+    role: model
+
+  - filename: mmproj-Muse-Glimmer-30B-Q4_K_M.gguf
+    sha256: f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6
+    role: multimodal-projector
+
+vault:
+  revision: vault/huggingface/meta-models/Muse-Glimmer-30B-GGUF/revisions/70bf1b61ac09f91b24d39038091b41c582bc5d7a
+
+validation:
+  required:
+    - exact-upstream-revision
+    - exact-model-sha256
+    - exact-projector-sha256
+    - llama-cpp-load
+    - ai-forge-inference-regression
+
+provenance:
+  source_evidence: llama-b10612-huggingface-resolution
+  artifact_policy: reacquire-authoritative-artifacts

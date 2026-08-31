@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(cd "${MODULE_DIR}/../../../../../.." && pwd)"
+
+INSTALLER_SHA="cccdfcbd1b55bf6003ac3037588c9f5b3b79aa0a75fe991e97bb218ccdb55e4d"
+
+INSTALLER_DIR="${STORE_ROOT}/vault/huggingface/buckets/ggml-org/install.sh/installers/${INSTALLER_SHA}"
+UPSTREAM="${INSTALLER_DIR}/install.sh"
+OFFLINE="${INSTALLER_DIR}/install-offline.sh"
+TEMP="${OFFLINE}.tmp"
+
+UPSTREAM_REPO='REPO="https://huggingface.co/buckets/$LLAMA_BUCKET/resolve"'
+OFFLINE_REPO='REPO="${LLAMA_REPO:-http://10.10.10.1:81/ai-stores/vault/huggingface/buckets/$LLAMA_BUCKET/releases}"'
+
+if [[ ! -f "${UPSTREAM}" ]]; then
+    echo "ERROR: preserved upstream installer not found:"
+    echo "  ${UPSTREAM}"
+    exit 1
+fi
+
+ACTUAL_UPSTREAM_SHA="$(sha256sum "${UPSTREAM}" | awk '{print $1}')"
+
+if [[ "${ACTUAL_UPSTREAM_SHA}" != "${INSTALLER_SHA}" ]]; then
+    echo "ERROR: preserved upstream installer checksum mismatch"
+    echo "expected: ${INSTALLER_SHA}"
+    echo "actual:   ${ACTUAL_UPSTREAM_SHA}"
+    exit 1
+fi
+
+if ! grep -Fxq "${UPSTREAM_REPO}" "${UPSTREAM}"; then
+    echo "ERROR: expected upstream repository definition not found"
+    echo "The upstream installer may have changed."
+    echo "Refusing to generate an offline derivative automatically."
+    exit 1
+fi
+
+{
+    cat <<'HEADER'
+# ---------------------------------------------------------------------------
+# Graystone AI Stores offline derivative
+#
+# Derived from the preserved authoritative llama installer.
+#
+# The upstream installer is retained unmodified as:
+#   install.sh
+#
+# This derivative changes only the artifact repository endpoint so the
+# installer can resolve its normal platform-specific artifacts from the
+# Graystone AI Stores Vault instead of the public Hugging Face service.
+#
+# LLAMA_REPO may be supplied at runtime to override the default local store.
+# All other installer behavior remains inherited from the upstream installer.
+# ---------------------------------------------------------------------------
+HEADER
+
+    sed \
+      "s|${UPSTREAM_REPO}|${OFFLINE_REPO}|" \
+      "${UPSTREAM}"
+} > "${TEMP}"
+
+chmod 0755 "${TEMP}"
+
+if cmp -s "${UPSTREAM}" "${TEMP}"; then
+    echo "ERROR: offline transformation produced no meaningful change"
+    rm -f "${TEMP}"
+    exit 1
+fi
+
+NEW_SHA="$(sha256sum "${TEMP}" | awk '{print $1}')"
+
+if [[ -f "${OFFLINE}" ]]; then
+    EXISTING_SHA="$(sha256sum "${OFFLINE}" | awk '{print $1}')"
+
+    if [[ "${EXISTING_SHA}" == "${NEW_SHA}" ]]; then
+        rm -f "${TEMP}"
+
+        echo "AI Stores: offline llama installer already valid"
+        echo
+        echo "upstream:"
+        echo "  ${ACTUAL_UPSTREAM_SHA}  install.sh"
+        echo
+        echo "offline derivative:"
+        echo "  ${EXISTING_SHA}  install-offline.sh"
+        exit 0
+    fi
+fi
+
+mv "${TEMP}" "${OFFLINE}"
+
+echo "AI Stores: generated offline llama installer"
+echo
+echo "upstream:"
+echo "  ${ACTUAL_UPSTREAM_SHA}  install.sh"
+echo
+echo "offline derivative:"
+sha256sum "${OFFLINE}"
+echo
+echo "repository transformation:"
+echo "  FROM: ${UPSTREAM_REPO}"
+echo "  TO:   ${OFFLINE_REPO}"

@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(cd "${MODULE_DIR}/../../../../.." && pwd)"
+
+MANIFEST="${MODULE_DIR}/amd64-closure.tsv"
+APT_ROOT="${STORE_ROOT}/vault/linux/ubuntu/apt"
+POOL="${APT_ROOT}/pool/main"
+DIST="${APT_ROOT}/dists/noble/main/binary-amd64"
+WORK="$(mktemp -d)"
+
+cleanup() {
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+for cmd in apt-get apt-cache dpkg-deb dpkg-scanpackages apt-ftparchive gzip; do
+    command -v "$cmd" >/dev/null || {
+        echo "ERROR: required command missing: $cmd" >&2
+        exit 1
+    }
+done
+
+mkdir -p "$POOL"
+
+awk -F '\t' '
+    NF >= 2 &&
+    $1 !~ /^#/ &&
+    $1 != "Package" &&
+    $1 != "package" {
+        print $1 "\t" $2
+    }
+' "$MANIFEST" | sort -u > "$WORK/wanted.tsv"
+
+cp "$WORK/wanted.tsv" "$WORK/unresolved.tsv"
+
+SNAPSHOTS=(
+    20260829T120000Z
+    20260725T120000Z
+    20260601T120000Z
+    20260429T120000Z
+    20260210T120000Z
+    20260201T120000Z
+    20251201T120000Z
+    20251001T120000Z
+    20250801T120000Z
+    20250601T120000Z
+    20250401T120000Z
+    20250201T120000Z
+    20241201T120000Z
+    20241001T120000Z
+    20240801T120000Z
+    20240501T120000Z
+)
+
+echo "Building Ubuntu NVIDIA 595.84 repository"
+echo "Manifest: $MANIFEST"
+echo "Target:   $APT_ROOT"
+echo
+
+for SNAPSHOT in "${SNAPSHOTS[@]}"; do
+    [[ -s "$WORK/unresolved.tsv" ]] || break
+
+    SNAP_ROOT="$WORK/$SNAPSHOT"
+
+    mkdir -p \
+        "$SNAP_ROOT/lists/partial" \
+        "$SNAP_ROOT/cache/archives/partial"
+
+    cat > "$SNAP_ROOT/sources.list" <<'SOURCES'
+deb [arch=amd64 snapshot=yes] http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+deb [arch=amd64 snapshot=yes] http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+deb [arch=amd64 snapshot=yes] http://security.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+SOURCES
+
+    APT_OPTS=(
+        -o "Dir::Etc::sourcelist=$SNAP_ROOT/sources.list"
+        -o "Dir::Etc::sourceparts=-"
+        -o "Dir::State::lists=$SNAP_ROOT/lists"
+        -o "Dir::Cache=$SNAP_ROOT/cache"
+        -o "APT::Architecture=amd64"
+        -o "APT::Architectures=amd64"
+        -o "Acquire::Languages=none"
+    )
+
+    echo "Snapshot: $SNAPSHOT"
+
+    apt-get -qq "${APT_OPTS[@]}" \
+        --snapshot "$SNAPSHOT" update
+
+    : > "$WORK/next-unresolved.tsv"
+
+    while IFS=$'\t' read -r pkg ver; do
+        if find "$POOL" -maxdepth 1 -type f -name '*.deb' -print0 |
+           xargs -0 -r dpkg-deb -W -f='${Package}\t${Version}\n' 2>/dev/null |
+           grep -Fqx "$pkg"$'\t'"$ver"; then
+            continue
+        fi
+
+        if apt-cache "${APT_OPTS[@]}" \
+             -o "APT::Snapshot=$SNAPSHOT" \
+             madison "$pkg" 2>/dev/null |
+           awk -F '|' '{
+               gsub(/^[ \t]+|[ \t]+$/, "", $2)
+               print $2
+           }' |
+           grep -Fxq "$ver"; then
+
+            echo "  GET $pkg=$ver"
+
+            (
+                cd "$POOL"
+                apt-get -qq "${APT_OPTS[@]}" \
+                    --snapshot "$SNAPSHOT" \
+                    download "$pkg=$ver"
+            )
+        else
+            printf '%s\t%s\n' "$pkg" "$ver" \
+                >> "$WORK/next-unresolved.tsv"
+        fi
+    done < "$WORK/unresolved.tsv"
+
+    mv "$WORK/next-unresolved.tsv" "$WORK/unresolved.tsv"
+
+    echo "  Remaining: $(wc -l < "$WORK/unresolved.tsv")"
+done
+
+if [[ -s "$WORK/unresolved.tsv" ]]; then
+    echo
+    echo "ERROR: unresolved exact package versions:"
+    cat "$WORK/unresolved.tsv"
+    exit 10
+fi
+
+for deb in "$POOL"/*.deb; do
+    printf '%s\t%s\n' \
+        "$(dpkg-deb -f "$deb" Package)" \
+        "$(dpkg-deb -f "$deb" Version)"
+done | sort -u > "$WORK/acquired.tsv"
+
+if ! diff -u "$WORK/wanted.tsv" "$WORK/acquired.tsv"; then
+    echo "ERROR: acquired package closure differs from manifest" >&2
+    exit 11
+fi
+
+mkdir -p "$DIST"
+
+cd "$APT_ROOT"
+
+dpkg-scanpackages --multiversion pool/main /dev/null \
+    > dists/noble/main/binary-amd64/Packages
+
+gzip -9c dists/noble/main/binary-amd64/Packages \
+    > dists/noble/main/binary-amd64/Packages.gz
+
+apt-ftparchive \
+    -o APT::FTPArchive::Release::Origin="Graystone AI Stores" \
+    -o APT::FTPArchive::Release::Label="Graystone Ubuntu Offline" \
+    -o APT::FTPArchive::Release::Suite="noble" \
+    -o APT::FTPArchive::Release::Codename="noble" \
+    -o APT::FTPArchive::Release::Architectures="amd64" \
+    -o APT::FTPArchive::Release::Components="main" \
+    release dists/noble \
+    > dists/noble/Release
+
+echo
+echo "Repository complete:"
+echo "  $APT_ROOT"
+echo "Packages:"
+grep -c '^Package:' dists/noble/main/binary-amd64/Packages
+echo "Size:"
+du -sh "$APT_ROOT"

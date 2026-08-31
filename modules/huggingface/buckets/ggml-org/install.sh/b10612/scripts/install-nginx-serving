@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+SOURCE="${MODULE_DIR}/serving/ai-stores.conf"
+DEST="/etc/nginx/conf.d/ai-stores.conf"
+
+BASE="http://10.10.10.1:81/ai-stores/vault/huggingface"
+REPO="meta-models/Muse-Glimmer-30B-GGUF"
+REVISION="70bf1b61ac09f91b24d39038091b41c582bc5d7a"
+MODEL="Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf"
+EXPECTED_MODEL_SIZE="16756683904"
+
+retry_curl() {
+    local url="$1"
+    local attempt
+
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if curl --fail --silent --show-error "$url"; then
+            return 0
+        fi
+
+        sleep 1
+    done
+
+    echo "ERROR: endpoint did not become available: ${url}" >&2
+    return 1
+}
+
+retry_head() {
+    local url="$1"
+    local attempt
+
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if curl --fail --silent --show-error --head "$url"; then
+            return 0
+        fi
+
+        sleep 1
+    done
+
+    echo "ERROR: endpoint did not become available: ${url}" >&2
+    return 1
+}
+
+if [[ ! -f "${SOURCE}" ]]; then
+    echo "ERROR: AI Stores nginx configuration not found:"
+    echo "  ${SOURCE}"
+    exit 1
+fi
+
+if ! command -v nginx >/dev/null 2>&1; then
+    echo "ERROR: nginx is not installed"
+    exit 1
+fi
+
+changed=0
+
+if [[ -f "${DEST}" ]] && cmp -s "${SOURCE}" "${DEST}"; then
+    echo "AI Stores: nginx configuration already valid"
+else
+    install -o root -g root -m 0644 "${SOURCE}" "${DEST}"
+    changed=1
+    echo "AI Stores: installed nginx serving configuration"
+fi
+
+echo
+echo "AI Stores: validating nginx configuration"
+nginx -t
+
+if [[ "${changed}" -eq 1 ]]; then
+    echo
+    echo "AI Stores: reloading nginx"
+    systemctl reload nginx
+fi
+
+echo
+echo "AI Stores: validating Hugging Face refs API"
+
+refs="$(
+    retry_curl \
+      "${BASE}/api/models/${REPO}/refs"
+)"
+
+printf '%s\n' "${refs}" | grep -Fq "${REVISION}" || {
+    echo "ERROR: refs API did not return expected revision" >&2
+    exit 1
+}
+
+echo "AI Stores: refs API verified"
+
+echo
+echo "AI Stores: validating Hugging Face tree API"
+
+tree="$(
+    retry_curl \
+      "${BASE}/api/models/${REPO}/tree/${REVISION}?recursive=true"
+)"
+
+printf '%s\n' "${tree}" | grep -Fq "${MODEL}" || {
+    echo "ERROR: tree API did not return expected model" >&2
+    exit 1
+}
+
+echo "AI Stores: tree API verified"
+
+echo
+echo "AI Stores: validating Hugging Face resolve mapping"
+
+headers="$(
+    retry_head \
+      "${BASE}/${REPO}/resolve/${REVISION}/${MODEL}"
+)"
+
+content_length="$(
+    printf '%s\n' "${headers}" |
+    awk 'BEGIN { IGNORECASE=1 }
+         /^Content-Length:/ {
+             gsub("\r", "", $2)
+             print $2
+         }' |
+    tail -1
+)"
+
+if [[ "${content_length}" != "${EXPECTED_MODEL_SIZE}" ]]; then
+    echo "ERROR: resolve URL returned unexpected artifact size" >&2
+    echo "expected: ${EXPECTED_MODEL_SIZE}" >&2
+    echo "actual:   ${content_length:-missing}" >&2
+    exit 1
+fi
+
+echo "AI Stores: resolve mapping verified"
+echo "  ${MODEL}"
+echo "  ${content_length} bytes"
+
+echo
+echo "AI Stores: llama Hugging Face compatibility complete"

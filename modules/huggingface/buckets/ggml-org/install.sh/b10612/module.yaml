@@ -1,0 +1,79 @@
+name: llama-installer-b10612-linux-x86_64-cuda-86
+type: huggingface-installer-runtime
+
+installer:
+  upstream:
+    url: https://llama.app/install.sh
+    sha256: cccdfcbd1b55bf6003ac3037588c9f5b3b79aa0a75fe991e97bb218ccdb55e4d
+    filename: install.sh
+    preserved_unmodified: true
+
+  offline:
+    filename: install-offline.sh
+    sha256: b5e039ce0789737d6798f4f0572aac081a8dfce0390402a945004027430f9439
+    derived_from: install.sh
+    purpose: offline-ai-stores-installation
+    modifications:
+      - replace public Hugging Face artifact repository with Graystone AI Stores
+      - allow LLAMA_REPO environment override
+    upstream_logic_preserved: true
+
+upstream:
+  provider: Hugging Face
+  bucket: ggml-org/install.sh
+  version: b10612
+  acquisition: huggingface-bucket
+  policy: exact-version-and-platform
+
+platform:
+  os: linux
+  architecture: x86_64
+  backend: cuda
+  configuration: "86"
+
+dependencies:
+  - role: decompression-helper
+    path: x86_64/linux/unzstd
+    sha256: bea7d76eee522dfacd7f1b21450866efe5260ae80063bfa6a2c40d849ee56f70
+
+  - role: cuda-probe
+    path: x86_64/linux/cuda/probe/probe.zst
+    sha256: ae2e19df4de6aa0736179c8cd1fb902512d27c6d49b356eae6a21376cc100fbb
+
+  - role: llama-runtime
+    path: x86_64/linux/cuda/86/llama-app.zst
+    sha256: 6dbdbfa383d365ef5ae114e2831840feb5cfed3a724064d450131588a67d3c36
+
+runtime:
+  artifact: llama-app.zst
+  artifact_sha256: 6dbdbfa383d365ef5ae114e2831840feb5cfed3a724064d450131588a67d3c36
+  decompressed_filename: llama
+  version: 0.2.0-dev
+  build: 10612
+  commit: 7584430716ee229751771ed0d6bbcb780d105eeb
+  sha256: 7d692bc72fcb179b81e15c3ea5a20495230ce269ab5016d0a340f9864591cfd6
+
+builder:
+  class: linux-amd64-cuda
+  native: true
+  purpose: installer-platform-selection-validation
+
+vault:
+  installer: vault/huggingface/buckets/ggml-org/install.sh/installers/cccdfcbd1b55bf6003ac3037588c9f5b3b79aa0a75fe991e97bb218ccdb55e4d/install.sh
+  offline_installer: vault/huggingface/buckets/ggml-org/install.sh/installers/cccdfcbd1b55bf6003ac3037588c9f5b3b79aa0a75fe991e97bb218ccdb55e4d/install-offline.sh
+  release_root: vault/huggingface/buckets/ggml-org/install.sh/releases/b10612
+
+validation:
+  required:
+    - exact-installer-sha256
+    - exact-version-b10612
+    - installer-selects-cuda-86
+    - exact-decompression-helper-sha256
+    - exact-cuda-probe-sha256
+    - exact-runtime-artifact-sha256
+    - exact-runtime-sha256-after-decompression
+    - ai-forge-inference-regression
+
+provenance:
+  source_evidence: known-good-daedalus-official-installer-run
+  artifact_policy: preserve-complete-authoritative-installer-dependency-closure

@@ -1,0 +1,12 @@
+---
+- name: Rebuild Muse Glimmer 30B AI Store
+  hosts: local
+  connection: local
+  gather_facts: false
+
+  vars:
+    ai_stores_root: "{{ playbook_dir }}/../.."
+    ai_stores_module: inference-muse-glimmer-30b
+
+  roles:
+    - ai-stores

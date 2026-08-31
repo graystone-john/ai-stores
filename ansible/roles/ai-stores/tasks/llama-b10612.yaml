@@ -1,0 +1,62 @@
+---
+- name: Record llama b10612 acquisition start
+  ansible.builtin.set_fact:
+    llama_b10612_start_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    llama_b10612_start_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report llama b10612 acquisition start
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: llama b10612 acquisition started at
+      {{ llama_b10612_start_time }}.
+
+- name: Acquire pinned official llama installer
+  ansible.builtin.command:
+    cmd: >-
+      {{ ai_stores_root }}/modules/huggingface/buckets/ggml-org/install.sh/b10612/scripts/acquire-installer
+  register: llama_installer_acquire
+  changed_when: "'already valid' not in llama_installer_acquire.stdout"
+
+- name: Generate Graystone offline derivative of llama installer
+  ansible.builtin.command:
+    cmd: >-
+      {{ ai_stores_root }}/modules/huggingface/buckets/ggml-org/install.sh/b10612/scripts/build-offline-installer
+  register: llama_offline_installer
+  changed_when: "'generated offline llama installer' in llama_offline_installer.stdout"
+
+- name: Acquire pinned CUDA 86 runtime
+  ansible.builtin.command:
+    cmd: >-
+      {{ ai_stores_root }}/modules/huggingface/buckets/ggml-org/install.sh/b10612/scripts/acquire-runtime
+  register: llama_runtime_acquire
+  changed_when: "'already valid' not in llama_runtime_acquire.stdout"
+
+- name: Configure llama Hugging Face serving compatibility
+  ansible.builtin.include_tasks: llama-b10612-serving.yaml
+
+- name: Record llama b10612 acquisition completion
+  ansible.builtin.set_fact:
+    llama_b10612_end_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    llama_b10612_end_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report llama b10612 acquisition completion
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: llama b10612 acquisition completed at
+      {{ llama_b10612_end_time }}.
+      Elapsed: {{
+        (llama_b10612_end_epoch | int) -
+        (llama_b10612_start_epoch | int)
+      }} seconds.
+
+- name: Report llama installer acquisition
+  ansible.builtin.debug:
+    var: llama_installer_acquire.stdout_lines
+
+- name: Report offline llama installer generation
+  ansible.builtin.debug:
+    var: llama_offline_installer.stdout_lines
+
+- name: Report llama runtime acquisition
+  ansible.builtin.debug:
+    var: llama_runtime_acquire.stdout_lines

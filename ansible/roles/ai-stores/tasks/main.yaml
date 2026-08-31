@@ -1,0 +1,18 @@
+---
+- name: Require AI Stores module
+  ansible.builtin.assert:
+    that:
+      - ai_stores_module is defined
+    fail_msg: "ai_stores_module must be specified"
+
+- name: Build Ubuntu NVIDIA 595.84 repository
+  ansible.builtin.include_tasks: ubuntu-nvidia-595.84.yaml
+  when: ai_stores_module == "ubuntu-nvidia-595.84"
+
+- name: Build Muse Glimmer inference assets
+  ansible.builtin.include_tasks: inference-muse-glimmer-30b.yaml
+  when: ai_stores_module == "inference-muse-glimmer-30b"
+
+- name: Build llama b10612 AI Store
+  ansible.builtin.include_tasks: llama-b10612.yaml
+  when: ai_stores_module == "llama-b10612"

@@ -1,0 +1,12 @@
+---
+- name: Install llama Hugging Face nginx compatibility fragment
+  ansible.builtin.command:
+    cmd: >-
+      {{ ai_stores_root }}/modules/huggingface/buckets/ggml-org/install.sh/b10612/scripts/install-nginx-serving
+  become: true
+  register: llama_nginx_serving
+  changed_when: "'installed Hugging Face nginx serving fragment' in llama_nginx_serving.stdout"
+
+- name: Report llama Hugging Face nginx compatibility fragment
+  ansible.builtin.debug:
+    var: llama_nginx_serving.stdout_lines

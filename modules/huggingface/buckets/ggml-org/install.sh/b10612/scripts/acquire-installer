@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(cd "${MODULE_DIR}/../../../../../.." && pwd)"
+
+INSTALLER_SHA="cccdfcbd1b55bf6003ac3037588c9f5b3b79aa0a75fe991e97bb218ccdb55e4d"
+
+DEST="${STORE_ROOT}/vault/huggingface/buckets/ggml-org/install.sh/installers/${INSTALLER_SHA}"
+TARGET="${DEST}/install.sh"
+TEMP="${TARGET}.tmp"
+
+mkdir -p "${DEST}"
+
+if [[ -f "${TARGET}" ]]; then
+    ACTUAL="$(sha256sum "${TARGET}" | awk '{print $1}')"
+
+    if [[ "${ACTUAL}" == "${INSTALLER_SHA}" ]]; then
+        echo "AI Stores: installer already valid"
+        exit 0
+    fi
+
+    echo "AI Stores: existing installer failed checksum; reacquiring"
+    rm -f "${TARGET}"
+fi
+
+echo "AI Stores: acquiring official llama installer"
+
+curl \
+  --fail \
+  --location \
+  --retry 5 \
+  --retry-delay 5 \
+  https://llama.app/install.sh \
+  --output "${TEMP}"
+
+ACTUAL="$(sha256sum "${TEMP}" | awk '{print $1}')"
+
+if [[ "${ACTUAL}" != "${INSTALLER_SHA}" ]]; then
+    echo "ERROR: installer checksum mismatch" >&2
+    echo "expected: ${INSTALLER_SHA}" >&2
+    echo "actual:   ${ACTUAL}" >&2
+    rm -f "${TEMP}"
+    exit 1
+fi
+
+chmod 0755 "${TEMP}"
+mv "${TEMP}" "${TARGET}"
+
+echo "AI Stores: installer acquired and verified"
+sha256sum "${TARGET}"

@@ -1,0 +1,12 @@
+---
+- name: Rebuild Ubuntu NVIDIA 595.84 AI Store
+  hosts: local
+  connection: local
+  gather_facts: false
+
+  vars:
+    ai_stores_root: "{{ playbook_dir }}/../.."
+    ai_stores_module: ubuntu-nvidia-595.84
+
+  roles:
+    - ai-stores

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(cd "${MODULE_DIR}/../../../../.." && pwd)"
+
+REPO="meta-models/Muse-Glimmer-30B-GGUF"
+REVISION="70bf1b61ac09f91b24d39038091b41c582bc5d7a"
+
+MODEL="Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf"
+MODEL_SHA="4cc57c0f51040a226e5a72cc47b7613f7772950e460a665f7083de89f183f60e"
+
+MMPROJ="mmproj-Muse-Glimmer-30B-Q4_K_M.gguf"
+MMPROJ_SHA="f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6"
+
+DEST="${STORE_ROOT}/vault/huggingface/meta-models/Muse-Glimmer-30B-GGUF/revisions/${REVISION}"
+
+mkdir -p "${DEST}"
+
+acquire() {
+    local filename="$1"
+    local expected_sha="$2"
+
+    local target="${DEST}/${filename}"
+    local temp="${target}.tmp"
+    local actual
+
+    if [[ -f "${target}" ]]; then
+        actual="$(sha256sum "${target}" | awk '{print $1}')"
+
+        if [[ "${actual}" == "${expected_sha}" ]]; then
+            echo "AI Stores: already valid: ${filename}"
+            return
+        fi
+
+        echo "AI Stores: existing artifact failed checksum: ${filename}"
+        echo "  expected: ${expected_sha}"
+        echo "  actual:   ${actual}"
+        rm -f "${target}"
+    fi
+
+    echo "AI Stores: acquiring ${filename}"
+
+    curl \
+      --fail \
+      --location \
+      --retry 5 \
+      --retry-delay 5 \
+      "https://huggingface.co/${REPO}/resolve/${REVISION}/${filename}?download=true" \
+      --output "${temp}"
+
+    actual="$(sha256sum "${temp}" | awk '{print $1}')"
+
+    if [[ "${actual}" != "${expected_sha}" ]]; then
+        echo "ERROR: checksum mismatch for ${filename}" >&2
+        echo "expected: ${expected_sha}" >&2
+        echo "actual:   ${actual}" >&2
+        rm -f "${temp}"
+        exit 1
+    fi
+
+    mv "${temp}" "${target}"
+
+    echo "AI Stores: acquired and verified: ${filename}"
+}
+
+acquire "${MODEL}" "${MODEL_SHA}"
+acquire "${MMPROJ}" "${MMPROJ_SHA}"
+
+echo
+echo "=== MUSE GLIMMER REVISION ==="
+echo "${REVISION}"
+
+echo
+echo "=== PRESERVED ARTIFACTS ==="
+
+sha256sum \
+  "${DEST}/${MODEL}" \
+  "${DEST}/${MMPROJ}"
+
+echo
+echo "AI Stores: Muse Glimmer Q4_K_M revision complete"

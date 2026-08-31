@@ -1,0 +1,42 @@
+name: ubuntu-nvidia-595.84
+type: apt-repository
+
+platform:
+  distribution: ubuntu
+  release: noble
+  architecture: amd64
+
+nvidia:
+  driver_package: nvidia-driver-595-open
+  driver_version: 595.84-0ubuntu0.24.04.1
+
+validated_system:
+  kernel: 6.8.0-100-generic
+
+manifest:
+  path: amd64-closure.tsv
+  format: package-version-tsv
+  package_count: 192
+
+upstream:
+  provider: Ubuntu
+  acquisition: ubuntu-snapshot-via-apt
+  policy: exact-version
+
+vault:
+  repository: vault/linux/ubuntu/apt
+  distribution: noble
+  component: main
+  architecture: amd64
+
+validation:
+  required:
+    - exact-package-version-closure
+    - apt-repository-index
+    - offline-apt-resolution
+    - offline-nvidia-install
+    - ai-forge-base-system-regression
+
+provenance:
+  source_evidence: clean-daedalus-nvidia-595-install
+  artifact_policy: reacquire-from-official-upstream

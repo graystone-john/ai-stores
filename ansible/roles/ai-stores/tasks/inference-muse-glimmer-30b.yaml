@@ -1,0 +1,37 @@
+---
+- name: Record Muse Glimmer acquisition start
+  ansible.builtin.set_fact:
+    muse_glimmer_start_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    muse_glimmer_start_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report Muse Glimmer acquisition start
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: Muse Glimmer 30B Q4_K_M acquisition started at
+      {{ muse_glimmer_start_time }}.
+
+- name: Acquire Muse Glimmer 30B Q4_K_M dependency layout
+  ansible.builtin.command:
+    cmd: >-
+      {{ ai_stores_root }}/modules/huggingface/meta-models/Muse-Glimmer-30B-GGUF/70bf1b61ac09f91b24d39038091b41c582bc5d7a/scripts/acquire
+  register: muse_glimmer_acquire
+  changed_when: "'acquired and verified' in muse_glimmer_acquire.stdout"
+
+- name: Record Muse Glimmer acquisition completion
+  ansible.builtin.set_fact:
+    muse_glimmer_end_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    muse_glimmer_end_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report Muse Glimmer acquisition completion
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: Muse Glimmer 30B Q4_K_M acquisition completed at
+      {{ muse_glimmer_end_time }}.
+      Elapsed: {{
+        (muse_glimmer_end_epoch | int) -
+        (muse_glimmer_start_epoch | int)
+      }} seconds.
+
+- name: Report Muse Glimmer acquisition
+  ansible.builtin.debug:
+    var: muse_glimmer_acquire.stdout_lines

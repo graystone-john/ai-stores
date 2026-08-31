@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(cd "${MODULE_DIR}/../../../../../.." && pwd)"
+
+VERSION="b10612"
+ARCH="x86_64"
+OS="linux"
+BACKEND="cuda"
+CONFIG="86"
+
+BASE_URL="https://huggingface.co/buckets/ggml-org/install.sh/resolve/${VERSION}"
+BASE_DEST="${STORE_ROOT}/vault/huggingface/buckets/ggml-org/install.sh/releases/${VERSION}"
+
+EXPECTED_UNZSTD_SHA="bea7d76eee522dfacd7f1b21450866efe5260ae80063bfa6a2c40d849ee56f70"
+EXPECTED_CUDA_PROBE_SHA="ae2e19df4de6aa0736179c8cd1fb902512d27c6d49b356eae6a21376cc100fbb"
+EXPECTED_LLAMA_ARTIFACT_SHA="6dbdbfa383d365ef5ae114e2831840feb5cfed3a724064d450131588a67d3c36"
+EXPECTED_LLAMA_SHA="7d692bc72fcb179b81e15c3ea5a20495230ce269ab5016d0a340f9864591cfd6"
+
+acquire_artifact() {
+    local relative_path="$1"
+    local expected_sha="$2"
+
+    local target="${BASE_DEST}/${relative_path}"
+    local temp="${target}.tmp"
+    local actual
+
+    mkdir -p "$(dirname "${target}")"
+
+    if [[ -f "${target}" ]]; then
+        actual="$(sha256sum "${target}" | awk '{print $1}')"
+
+        if [[ "${actual}" == "${expected_sha}" ]]; then
+            echo "AI Stores: already valid: ${relative_path}"
+            echo "  sha256: ${actual}"
+            return
+        fi
+
+        echo "AI Stores: existing artifact failed checksum: ${relative_path}"
+        echo "  expected: ${expected_sha}"
+        echo "  actual:   ${actual}"
+        rm -f "${target}"
+    fi
+
+    echo "AI Stores: acquiring ${relative_path}"
+
+    curl \
+      --fail \
+      --location \
+      --retry 5 \
+      --retry-delay 5 \
+      "${BASE_URL}/${relative_path}" \
+      --output "${temp}"
+
+    actual="$(sha256sum "${temp}" | awk '{print $1}')"
+
+    if [[ "${actual}" != "${expected_sha}" ]]; then
+        echo "ERROR: checksum mismatch for ${relative_path}" >&2
+        echo "expected: ${expected_sha}" >&2
+        echo "actual:   ${actual}" >&2
+        rm -f "${temp}"
+        exit 1
+    fi
+
+    mv "${temp}" "${target}"
+
+    echo "AI Stores: acquired and verified: ${relative_path}"
+    echo "  sha256: ${actual}"
+}
+
+verify_llama_payload() {
+    local artifact="$1"
+    local work
+    local actual
+
+    work="$(mktemp)"
+    trap 'rm -f "${work}"' RETURN
+
+    zstd -q -d -c "${artifact}" > "${work}"
+
+    actual="$(sha256sum "${work}" | awk '{print $1}')"
+
+    if [[ "${actual}" != "${EXPECTED_LLAMA_SHA}" ]]; then
+        echo "ERROR: decompressed llama checksum mismatch" >&2
+        echo "expected: ${EXPECTED_LLAMA_SHA}" >&2
+        echo "actual:   ${actual}" >&2
+        return 1
+    fi
+
+    echo "AI Stores: decompressed runtime verified"
+    echo "  ${actual}  llama"
+}
+
+echo "=== LLAMA INSTALLER DEPENDENCY CLOSURE ==="
+echo "version:       ${VERSION}"
+echo "platform:      ${ARCH}/${OS}"
+echo "backend:       ${BACKEND}"
+echo "configuration: ${CONFIG}"
+echo
+
+acquire_artifact \
+  "${ARCH}/${OS}/unzstd" \
+  "${EXPECTED_UNZSTD_SHA}"
+
+acquire_artifact \
+  "${ARCH}/${OS}/${BACKEND}/probe/probe.zst" \
+  "${EXPECTED_CUDA_PROBE_SHA}"
+
+acquire_artifact \
+  "${ARCH}/${OS}/${BACKEND}/${CONFIG}/llama-app.zst" \
+  "${EXPECTED_LLAMA_ARTIFACT_SHA}"
+
+verify_llama_payload \
+  "${BASE_DEST}/${ARCH}/${OS}/${BACKEND}/${CONFIG}/llama-app.zst"
+
+echo
+echo "=== PRESERVED DEPENDENCY CLOSURE ==="
+
+sha256sum \
+  "${BASE_DEST}/${ARCH}/${OS}/unzstd" \
+  "${BASE_DEST}/${ARCH}/${OS}/${BACKEND}/probe/probe.zst" \
+  "${BASE_DEST}/${ARCH}/${OS}/${BACKEND}/${CONFIG}/llama-app.zst"
+
+echo
+echo "AI Stores: llama ${VERSION} ${ARCH}/${OS}/${BACKEND} dependency closure complete"

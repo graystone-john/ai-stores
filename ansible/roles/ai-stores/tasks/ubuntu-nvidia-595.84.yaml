@@ -1,0 +1,11 @@
+---
+- name: Rebuild Ubuntu NVIDIA 595.84 APT repository
+  ansible.builtin.command:
+    cmd: >-
+      {{ ai_stores_root }}/modules/linux/ubuntu/nvidia/595.84/scripts/build-apt-repository
+  register: ubuntu_nvidia_build
+  changed_when: true
+
+- name: Report Ubuntu NVIDIA repository build
+  ansible.builtin.debug:
+    var: ubuntu_nvidia_build.stdout_lines
