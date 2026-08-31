@@ -36,3 +36,8 @@
 - name: Build Hermes Agent 0.20.6 AI Stores
   ansible.builtin.include_tasks: hermes-agent-0.20.6.yaml
   when: ai_stores_module == "hermes-agent-0.20.6"
+
+- name: Build Ubuntu Noble iPXE AI Store
+  ansible.builtin.include_tasks: ipxe.yaml
+  when: ai_stores_module == "ipxe"
+

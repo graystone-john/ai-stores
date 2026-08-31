@@ -1,0 +1,10 @@
+---
+- name: Build iPXE AI Store
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  roles:
+    - role: ai-stores
+      vars:
+        ai_stores_module: ipxe

@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STORE_ROOT="$(cd "${SCRIPT_DIR}/../../../../../../../.." && pwd)"
+
+APT_ROOT="${STORE_ROOT}/vault/linux/ubuntu/apt"
+POOL="${APT_ROOT}/pool/main"
+
+PACKAGE="ipxe"
+VERSION="1.21.1+git-20220113.fbbdc3926-0ubuntu2"
+ARCH="all"
+SHA256="30ff9a37be08193f018436a5611e357b2e065ae251155b7f95a1d4bdd4d2ad39"
+
+SNAPSHOT="20260829T030000Z"
+
+mkdir -p "${POOL}"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+mkdir -p \
+  "$WORK/etc/apt/sources.list.d" \
+  "$WORK/state/lists/partial" \
+  "$WORK/cache/archives/partial" \
+  "$WORK/downloads"
+
+cat > "$WORK/etc/apt/sources.list" <<'SOURCES'
+deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu noble main
+deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu noble-updates main
+deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://security.ubuntu.com/ubuntu noble-security main
+SOURCES
+
+APT_OPTS=(
+  -o "Dir::Etc::sourcelist=$WORK/etc/apt/sources.list"
+  -o "Dir::Etc::sourceparts=$WORK/etc/apt/sources.list.d"
+  -o "Dir::State=$WORK/state"
+  -o "Dir::State::lists=$WORK/state/lists"
+  -o "Dir::Cache=$WORK/cache"
+  -o "Dir::Cache::archives=$WORK/cache/archives"
+  -o "APT::Architecture=amd64"
+  -o "APT::Architectures::=amd64"
+)
+
+echo "AI Stores: refreshing Ubuntu Noble snapshot"
+
+apt-get \
+  "${APT_OPTS[@]}" \
+  --snapshot "$SNAPSHOT" \
+  update
+
+echo "AI Stores: acquiring ${PACKAGE}=${VERSION}"
+
+(
+  cd "$WORK/downloads"
+
+  apt-get \
+    "${APT_OPTS[@]}" \
+    --snapshot "$SNAPSHOT" \
+    download "${PACKAGE}=${VERSION}"
+)
+
+mapfile -t DEBS < <(
+  find "$WORK/downloads" \
+    -maxdepth 1 \
+    -type f \
+    -name '*.deb' \
+    -print
+)
+
+if [[ "${#DEBS[@]}" -ne 1 ]]; then
+    echo "ERROR: expected exactly one iPXE DEB" >&2
+    exit 1
+fi
+
+DEB="${DEBS[0]}"
+
+ACTUAL_PACKAGE="$(dpkg-deb -f "$DEB" Package)"
+ACTUAL_VERSION="$(dpkg-deb -f "$DEB" Version)"
+ACTUAL_ARCH="$(dpkg-deb -f "$DEB" Architecture)"
+ACTUAL_SHA="$(sha256sum "$DEB" | awk '{print $1}')"
+
+[[ "$ACTUAL_PACKAGE" == "$PACKAGE" ]] || {
+    echo "ERROR: package mismatch: $ACTUAL_PACKAGE" >&2
+    exit 1
+}
+
+[[ "$ACTUAL_VERSION" == "$VERSION" ]] || {
+    echo "ERROR: version mismatch: $ACTUAL_VERSION" >&2
+    exit 1
+}
+
+[[ "$ACTUAL_ARCH" == "$ARCH" ]] || {
+    echo "ERROR: architecture mismatch: $ACTUAL_ARCH" >&2
+    exit 1
+}
+
+[[ "$ACTUAL_SHA" == "$SHA256" ]] || {
+    echo "ERROR: SHA256 mismatch" >&2
+    echo "expected: $SHA256" >&2
+    echo "actual:   $ACTUAL_SHA" >&2
+    exit 1
+}
+
+# Remove any existing exact copy so repeated acquisition stays deterministic.
+find "$POOL" -type f -name '*.deb' -print0 |
+while IFS= read -r -d '' existing; do
+    if [[ "$(dpkg-deb -f "$existing" Package 2>/dev/null || true)" == "$PACKAGE" ]] &&
+       [[ "$(dpkg-deb -f "$existing" Version 2>/dev/null || true)" == "$VERSION" ]]; then
+        rm -f "$existing"
+    fi
+done
+
+mv "$DEB" "$POOL/"
+
+"${STORE_ROOT}/modules/linux/ubuntu/scripts/rebuild-apt-repository"
+
+echo
+echo "AI Stores: iPXE acquisition complete"
+echo "Package:      ${PACKAGE}"
+echo "Version:      ${VERSION}"
+echo "Architecture: ${ARCH}"
+echo "SHA256:       ${SHA256}"
