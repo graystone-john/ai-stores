@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STORE_ROOT="$(cd "${SCRIPT_DIR}/../../../../../.." && pwd)"
+
+VERSION="1.62.1"
+MANIFEST="${STORE_ROOT}/vault/node/npm/manifests/hermes-agent/0.20.6/linux-x86_64-node26-playwright.tsv"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+mkdir -p "$(dirname "$MANIFEST")"
+
+packages=(
+  "@playwright/test@${VERSION}"
+  "playwright@${VERSION}"
+  "playwright-core@${VERSION}"
+)
+
+printf 'package\tversion\tresolved\tintegrity\tlock_key\tfilename\tsha256\tsize\n' \
+  > "$MANIFEST"
+
+for spec in "${packages[@]}"; do
+    echo "PACK: $spec"
+
+    json="$(npm view "$spec" --json dist name version)"
+
+    name="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])' <<<"$json")"
+    version="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["version"])' <<<"$json")"
+    resolved="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["dist"]["tarball"])' <<<"$json")"
+    integrity="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["dist"]["integrity"])' <<<"$json")"
+
+    filename="${resolved##*/}"
+
+    scope_dir="$name"
+    scope_dir="${scope_dir#@}"
+    scope_dir="${scope_dir//\//\/}"
+
+    if [[ "$name" == @*/* ]]; then
+        scope="${name%%/*}"
+        short="${name#*/}"
+        dest="${STORE_ROOT}/vault/node/npm/packages/${scope}/${short}/${version}/${filename}"
+    else
+        dest="${STORE_ROOT}/vault/node/npm/packages/${name}/${version}/${filename}"
+    fi
+
+    mkdir -p "$(dirname "$dest")"
+
+    if [[ ! -f "$dest" ]]; then
+        curl -fL --retry 3 "$resolved" -o "${dest}.tmp"
+        mv "${dest}.tmp" "$dest"
+    fi
+
+    sha256="$(sha256sum "$dest" | awk '{print $1}')"
+    size="$(stat -c '%s' "$dest")"
+
+    case "$name" in
+      "@playwright/test")
+        lock_key="node_modules/@playwright/test"
+        ;;
+      playwright)
+        lock_key="node_modules/playwright"
+        ;;
+      playwright-core)
+        lock_key="node_modules/playwright-core"
+        ;;
+      *)
+        echo "ERROR: unexpected package: $name" >&2
+        exit 1
+        ;;
+    esac
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$name" \
+      "$version" \
+      "$resolved" \
+      "$integrity" \
+      "$lock_key" \
+      "$filename" \
+      "$sha256" \
+      "$size" \
+      >> "$MANIFEST"
+done
+
+echo
+echo "AI Stores: Playwright npm closure complete"
+cat "$MANIFEST"

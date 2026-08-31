@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STORE_ROOT="$(cd "${SCRIPT_DIR}/../../../../../.." && pwd)"
+
+COMMIT="60a4442826ee063bf39aa26ebac2af0f347cfce0"
+EXPECTED_SHA256="e6f785cd06e0a68057a3b4ea2b84f3cd70e82679edce9f4df55cb836134ebcc1"
+
+DEST="${STORE_ROOT}/vault/github/NousResearch/hermes-agent/archive/${COMMIT}.tar.gz"
+URL="https://github.com/NousResearch/hermes-agent/archive/${COMMIT}.tar.gz"
+
+mkdir -p "$(dirname "$DEST")"
+
+if [[ ! -f "$DEST" ]]; then
+    curl -fL --retry 3 "$URL" -o "${DEST}.tmp"
+    mv "${DEST}.tmp" "$DEST"
+fi
+
+echo "${EXPECTED_SHA256}  ${DEST}" | sha256sum -c -
+
+echo "AI Stores: Hermes Agent source ${COMMIT} verified"

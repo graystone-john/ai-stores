@@ -1,0 +1,19 @@
+---
+module:
+  name: hermes-agent-source
+  version: "0.20.6"
+
+source:
+  provider: github
+  repository: NousResearch/hermes-agent
+  commit: "60a4442826ee063bf39aa26ebac2af0f347cfce0"
+
+artifact:
+  path: "vault/github/NousResearch/hermes-agent/archive/60a4442826ee063bf39aa26ebac2af0f347cfce0.tar.gz"
+  sha256: "e6f785cd06e0a68057a3b4ea2b84f3cd70e82679edce9f4df55cb836134ebcc1"
+
+verification:
+  project_version: "0.20.6"
+  pyproject_sha256: "8fdd016886353ed18ad293c840a0422f0f750b64b30d1e19ad21649441b3f80b"
+  uv_lock_sha256: "d245e64cefba0fda51acb9164b25b3962d793f15836034ab8cb8e178a6943154"
+  package_lock_sha256: "83beeba3f6e7826312444c7b64067488afae9ed88ad7326ecef61ac235bab86d"

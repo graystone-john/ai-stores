@@ -1,0 +1,21 @@
+---
+module:
+  name: playwright-browsers
+  version: "1.62.1"
+
+platform:
+  os: linux
+  architecture: x86_64
+
+browsers:
+  chromium:
+    revision: "1234"
+
+  chromium_headless_shell:
+    revision: "1234"
+
+  ffmpeg:
+    revision: "1011"
+
+vault:
+  root: "vault/playwright/1.62.1/linux-x86_64"

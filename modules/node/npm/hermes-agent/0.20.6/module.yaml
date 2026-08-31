@@ -1,0 +1,21 @@
+---
+module:
+  name: hermes-agent-npm
+  version: "0.20.6"
+
+platform:
+  os: linux
+  architecture: x86_64
+  node: "26.8.1"
+  npm: "11.19.0"
+
+source:
+  hermes_commit: "60a4442826ee063bf39aa26ebac2af0f347cfce0"
+  package_lock_sha256: "83beeba3f6e7826312444c7b64067488afae9ed88ad7326ecef61ac235bab86d"
+
+manifests:
+  tui: "vault/node/npm/manifests/hermes-agent/0.20.6/linux-x86_64-node26-tui.tsv"
+  playwright: "vault/node/npm/manifests/hermes-agent/0.20.6/linux-x86_64-node26-playwright.tsv"
+
+playwright:
+  version: "1.62.1"

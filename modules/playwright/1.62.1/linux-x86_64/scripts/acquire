@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STORE_ROOT="$(cd "${SCRIPT_DIR}/../../../../.." && pwd)"
+
+VERSION="1.62.1"
+BASE_URL="https://cdn.playwright.dev"
+CHROMIUM_VERSION="151.0.7922.34"
+
+for cmd in curl unzip sha256sum stat; do
+    command -v "$cmd" >/dev/null || {
+        echo "ERROR: required command missing: $cmd" >&2
+        exit 1
+    }
+done
+
+DEST="${STORE_ROOT}/vault/playwright/${VERSION}/linux-x86_64"
+ARCHIVES="${DEST}/archives"
+
+mkdir -p "$ARCHIVES"
+
+declare -A URLS=(
+  ["chromium-1234.zip"]="${BASE_URL}/builds/cft/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"
+  ["chromium_headless_shell-1234.zip"]="${BASE_URL}/builds/cft/${CHROMIUM_VERSION}/linux64/chrome-headless-shell-linux64.zip"
+  ["ffmpeg-1011.zip"]="${BASE_URL}/builds/ffmpeg/1011/ffmpeg-linux.zip"
+)
+
+for filename in \
+  chromium-1234.zip \
+  chromium_headless_shell-1234.zip \
+  ffmpeg-1011.zip
+do
+    dest="${ARCHIVES}/${filename}"
+
+    if [[ ! -f "$dest" ]]; then
+        echo "DOWNLOAD: ${URLS[$filename]}"
+        curl -fL --retry 3 "${URLS[$filename]}" -o "${dest}.tmp"
+        mv "${dest}.tmp" "$dest"
+    else
+        echo "PRESENT: $dest"
+    fi
+done
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+rm -rf \
+  "${DEST}/chromium-1234" \
+  "${DEST}/chromium_headless_shell-1234" \
+  "${DEST}/ffmpeg-1011"
+
+mkdir -p \
+  "${DEST}/chromium-1234" \
+  "${DEST}/chromium_headless_shell-1234" \
+  "${DEST}/ffmpeg-1011"
+
+unzip -q "${ARCHIVES}/chromium-1234.zip" \
+  -d "${DEST}/chromium-1234"
+
+unzip -q "${ARCHIVES}/chromium_headless_shell-1234.zip" \
+  -d "${DEST}/chromium_headless_shell-1234"
+
+unzip -q "${ARCHIVES}/ffmpeg-1011.zip" \
+  -d "${DEST}/ffmpeg-1011"
+
+touch \
+  "${DEST}/chromium-1234/INSTALLATION_COMPLETE" \
+  "${DEST}/chromium-1234/DEPENDENCIES_VALIDATED" \
+  "${DEST}/chromium_headless_shell-1234/INSTALLATION_COMPLETE" \
+  "${DEST}/chromium_headless_shell-1234/DEPENDENCIES_VALIDATED" \
+  "${DEST}/ffmpeg-1011/INSTALLATION_COMPLETE" \
+  "${DEST}/ffmpeg-1011/DEPENDENCIES_VALIDATED"
+
+(
+    cd "$DEST"
+
+    find \
+      chromium-1234 \
+      chromium_headless_shell-1234 \
+      ffmpeg-1011 \
+      -type f \
+      ! -name SHA256SUMS \
+      -print0 |
+    sort -z |
+    xargs -0 sha256sum > SHA256SUMS
+)
+
+(
+    cd "$ARCHIVES"
+    sha256sum \
+      chromium-1234.zip \
+      chromium_headless_shell-1234.zip \
+      ffmpeg-1011.zip \
+      > SHA256SUMS
+)
+
+echo
+echo "AI Stores: Playwright ${VERSION} browser assets complete"
+du -sh "$DEST"

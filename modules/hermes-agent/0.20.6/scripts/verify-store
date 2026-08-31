@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STORE_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
+
+required=(
+  "vault/github/NousResearch/hermes-agent/archive/60a4442826ee063bf39aa26ebac2af0f347cfce0.tar.gz"
+  "vault/python/runtimes/astral/python-build-standalone/releases/20260825/cpython-3.11.16+20260825-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+  "vault/python/tooling/uv/releases/0.12.7/uv-x86_64-unknown-linux-gnu.tar.gz"
+  "vault/python/pypi/manifests/hermes-agent/0.20.6/build.tsv"
+  "vault/python/pypi/manifests/hermes-agent/0.20.6/linux-x86_64-cpython-3.11.tsv"
+  "vault/node/runtimes/nodejs/releases/v26.8.1/node-v26.8.1-linux-x64.tar.xz"
+  "vault/node/npm/manifests/hermes-agent/0.20.6/linux-x86_64-node26-tui.tsv"
+  "vault/node/npm/manifests/hermes-agent/0.20.6/linux-x86_64-node26-playwright.tsv"
+)
+
+failed=0
+
+for rel in "${required[@]}"; do
+    if [[ -e "${STORE_ROOT}/${rel}" ]]; then
+        echo "PASS: $rel"
+    else
+        echo "MISSING: $rel"
+        failed=1
+    fi
+done
+
+PW="${STORE_ROOT}/vault/playwright/1.62.1/linux-x86_64"
+
+for component in \
+    chromium-1234 \
+    chromium_headless_shell-1234 \
+    ffmpeg-1011
+do
+    if [[ -f "${PW}/${component}/INSTALLATION_COMPLETE" ]]; then
+        echo "PASS: Playwright ${component}"
+    else
+        echo "MISSING: Playwright ${component}"
+        failed=1
+    fi
+done
+
+exit "$failed"

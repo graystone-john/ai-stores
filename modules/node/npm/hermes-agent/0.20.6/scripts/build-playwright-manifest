@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+
+import hashlib
+import json
+import sys
+import urllib.request
+from pathlib import Path
+
+if len(sys.argv) != 3:
+    raise SystemExit(
+        "usage: build-playwright-manifest PACKAGE_LOCK OUTPUT"
+    )
+
+lock_path = Path(sys.argv[1])
+output = Path(sys.argv[2])
+
+lock = json.loads(lock_path.read_text())
+
+wanted_roots = {
+    "node_modules/@playwright/test",
+    "node_modules/playwright",
+    "node_modules/playwright-core",
+}
+
+packages = lock.get("packages", {})
+
+rows = []
+
+for key in sorted(wanted_roots):
+    entry = packages.get(key)
+
+    if not entry:
+        raise SystemExit(f"missing lock entry: {key}")
+
+    name = key.removeprefix("node_modules/")
+    version = entry["version"]
+    resolved = entry["resolved"]
+    integrity = entry.get("integrity", "")
+
+    with urllib.request.urlopen(resolved) as response:
+        data = response.read()
+
+    sha256 = hashlib.sha256(data).hexdigest()
+
+    filename = resolved.rsplit("/", 1)[-1]
+
+    rows.append(
+        (
+            name,
+            version,
+            resolved,
+            integrity,
+            key,
+            filename,
+            sha256,
+            str(len(data)),
+        )
+    )
+
+output.parent.mkdir(parents=True, exist_ok=True)
+
+with output.open("w") as fh:
+    fh.write(
+        "package\tversion\tresolved\tintegrity\tlock_key\t"
+        "filename\tsha256\tsize\n"
+    )
+
+    for row in rows:
+        fh.write("\t".join(row) + "\n")
+
+print(f"wrote {len(rows)} Playwright npm entries to {output}")

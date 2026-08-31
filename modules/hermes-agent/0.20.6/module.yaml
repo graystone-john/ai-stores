@@ -1,0 +1,36 @@
+---
+module:
+  name: hermes-agent
+  version: "0.20.6"
+
+source:
+  repository: NousResearch/hermes-agent
+  commit: "60a4442826ee063bf39aa26ebac2af0f347cfce0"
+
+runtime:
+  python:
+    implementation: cpython
+    version: "3.11.16"
+    release: "20260825"
+
+  uv:
+    version: "0.12.7"
+
+  node:
+    version: "26.8.1"
+
+  npm:
+    version: "11.19.0"
+
+  playwright:
+    version: "1.62.1"
+
+dependencies:
+  python_manifest: "vault/python/pypi/manifests/hermes-agent/0.20.6/linux-x86_64-cpython-3.11.tsv"
+  python_build_manifest: "vault/python/pypi/manifests/hermes-agent/0.20.6/build.tsv"
+  npm_tui_manifest: "vault/node/npm/manifests/hermes-agent/0.20.6/linux-x86_64-node26-tui.tsv"
+  npm_playwright_manifest: "vault/node/npm/manifests/hermes-agent/0.20.6/linux-x86_64-node26-playwright.tsv"
+  apt_closure: "modules/linux/ubuntu/noble/playwright/1.62.1/amd64/amd64-closure.tsv"
+
+installation:
+  network_required: false
