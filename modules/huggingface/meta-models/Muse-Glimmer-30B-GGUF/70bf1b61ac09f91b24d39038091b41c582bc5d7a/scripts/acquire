@@ -13,6 +13,9 @@ MODEL_SHA="4cc57c0f51040a226e5a72cc47b7613f7772950e460a665f7083de89f183f60e"
 MMPROJ="mmproj-Muse-Glimmer-30B-Q4_K_M.gguf"
 MMPROJ_SHA="f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6"
 
+DFLASH="dflash-Muse-Glimmer-30B-Q4_K_M.gguf"
+DFLASH_SHA="b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef"
+
 DEST="${STORE_ROOT}/vault/huggingface/meta-models/Muse-Glimmer-30B-GGUF/revisions/${REVISION}"
 
 mkdir -p "${DEST}"
@@ -66,6 +69,7 @@ acquire() {
 
 acquire "${MODEL}" "${MODEL_SHA}"
 acquire "${MMPROJ}" "${MMPROJ_SHA}"
+acquire "${DFLASH}" "${DFLASH_SHA}"
 
 echo
 echo "=== MUSE GLIMMER REVISION ==="
@@ -76,7 +80,8 @@ echo "=== PRESERVED ARTIFACTS ==="
 
 sha256sum \
   "${DEST}/${MODEL}" \
-  "${DEST}/${MMPROJ}"
+  "${DEST}/${MMPROJ}" \
+  "${DEST}/${DFLASH}"
 
 echo
 echo "AI Stores: Muse Glimmer Q4_K_M revision complete"

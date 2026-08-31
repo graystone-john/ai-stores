@@ -1,0 +1,35 @@
+---
+- name: Record Playwright Ubuntu acquisition start
+  ansible.builtin.set_fact:
+    playwright_ubuntu_acquire_start_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    playwright_ubuntu_acquire_start_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report Playwright Ubuntu acquisition start
+  ansible.builtin.debug:
+    msg: >-
+      AI_STORES_STEP_START
+      name=playwright-ubuntu-1.62.1-amd64
+      time={{ playwright_ubuntu_acquire_start_time }}
+
+- name: Acquire Playwright Ubuntu Noble runtime closure
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/../../modules/linux/ubuntu/noble/playwright/1.62.1/amd64/scripts/acquire"
+  register: playwright_ubuntu_acquire
+  changed_when: "'ACQUIRE:' in playwright_ubuntu_acquire.stdout"
+
+- name: Record Playwright Ubuntu acquisition end
+  ansible.builtin.set_fact:
+    playwright_ubuntu_acquire_end_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    playwright_ubuntu_acquire_end_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report Playwright Ubuntu acquisition complete
+  ansible.builtin.debug:
+    msg: >-
+      AI_STORES_STEP_COMPLETE
+      name=playwright-ubuntu-1.62.1-amd64
+      time={{ playwright_ubuntu_acquire_end_time }}
+      duration_seconds={{
+        (playwright_ubuntu_acquire_end_epoch | int) -
+        (playwright_ubuntu_acquire_start_epoch | int)
+      }}

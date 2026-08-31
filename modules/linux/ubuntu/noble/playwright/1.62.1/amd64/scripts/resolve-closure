@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+ROOTS="${MODULE_ROOT}/root-deps.txt"
+OUT="${MODULE_ROOT}/amd64-closure.tsv"
+SNAPSHOT="20260829T030000Z"
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+mkdir -p \
+  "$WORK/etc/apt/sources.list.d" \
+  "$WORK/state/lists/partial" \
+  "$WORK/cache/archives/partial"
+
+: > "$WORK/state/status"
+
+cat > "$WORK/etc/apt/sources.list" <<'SOURCES'
+deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu noble main universe restricted multiverse
+deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://archive.ubuntu.com/ubuntu noble-updates main universe restricted multiverse
+deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] http://security.ubuntu.com/ubuntu noble-security main universe restricted multiverse
+SOURCES
+
+APT_OPTS=(
+  -o "Dir::Etc::sourcelist=$WORK/etc/apt/sources.list"
+  -o "Dir::Etc::sourceparts=$WORK/etc/apt/sources.list.d"
+  -o "Dir::State=$WORK/state"
+  -o "Dir::State::status=$WORK/state/status"
+  -o "Dir::State::lists=$WORK/state/lists"
+  -o "Dir::Cache=$WORK/cache"
+  -o "Dir::Cache::archives=$WORK/cache/archives"
+  -o "APT::Architecture=amd64"
+  -o "APT::Architectures::=amd64"
+)
+
+echo "AI Stores: refreshing Noble amd64 snapshot"
+apt-get "${APT_OPTS[@]}" --snapshot "$SNAPSHOT" update >/dev/null
+
+mapfile -t deps < <(
+  grep -vE '^[[:space:]]*(#|$)' "$ROOTS"
+)
+
+echo "AI Stores: resolving ${#deps[@]} Playwright root requirements"
+
+apt-get \
+  "${APT_OPTS[@]}" \
+  --snapshot "$SNAPSHOT" \
+  --simulate \
+  satisfy "${deps[@]}" \
+  > "$WORK/solution.txt"
+
+sed -nE \
+  's/^Inst ([^ :]+)(:[^ ]+)? \(([^ ]+).*/\1\t\3/p' \
+  "$WORK/solution.txt" \
+  | sort -u \
+  > "$OUT.new"
+
+if [[ ! -s "$OUT.new" ]]; then
+  echo "ERROR: resolver produced an empty closure" >&2
+  exit 1
+fi
+
+mv "$OUT.new" "$OUT"
+
+echo
+echo "AI Stores: resolved $(wc -l < "$OUT") exact packages"
+echo "AI Stores: GTK / xdg selections:"
+grep -E $'^(libgtk-3-0t64|libgtk-4-1|xdg-utils)\t' "$OUT" || true

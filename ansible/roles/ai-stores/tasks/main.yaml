@@ -24,3 +24,15 @@
 - name: Build aider-chat 0.86.2 PyPI AI Store
   ansible.builtin.include_tasks: aider-chat-0.86.2.yaml
   when: ai_stores_module == "aider-chat-0.86.2"
+
+- name: Build Playwright 1.62.1 AI Store
+  ansible.builtin.include_tasks: playwright-1.62.1.yaml
+  when: ai_stores_module == "playwright-1.62.1"
+
+- name: Build Playwright Ubuntu Noble 1.62.1 AI Store
+  ansible.builtin.include_tasks: playwright-ubuntu-1.62.1-amd64.yaml
+  when: ai_stores_module == "playwright-ubuntu-1.62.1-amd64"
+
+- name: Build Hermes Agent 0.20.6 AI Stores
+  ansible.builtin.include_tasks: hermes-agent-0.20.6.yaml
+  when: ai_stores_module == "hermes-agent-0.20.6"

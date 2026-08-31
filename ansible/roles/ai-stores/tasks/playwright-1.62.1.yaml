@@ -1,0 +1,14 @@
+---
+- name: Acquire Playwright 1.62.1 npm packages
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/../../modules/node/npm/hermes-agent/0.20.6/scripts/acquire-playwright"
+  register: playwright_npm_acquire
+  changed_when: true
+
+- name: Acquire Playwright 1.62.1 browser assets
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/../../modules/playwright/1.62.1/linux-x86_64/scripts/acquire"
+  register: playwright_browser_acquire
+  changed_when: true

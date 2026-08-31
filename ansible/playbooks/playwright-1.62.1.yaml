@@ -1,0 +1,10 @@
+---
+- name: Build Playwright 1.62.1 AI Store
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  roles:
+    - role: ai-stores
+      vars:
+        ai_stores_module: playwright-1.62.1

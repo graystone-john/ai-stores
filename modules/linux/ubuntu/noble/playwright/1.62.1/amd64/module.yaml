@@ -1,0 +1,19 @@
+---
+module:
+  name: playwright-ubuntu-runtime
+  version: "1.62.1"
+
+platform:
+  distribution: ubuntu
+  release: noble
+  version: "24.04"
+  architecture: amd64
+
+purpose: "Playwright Chromium runtime dependency closure"
+
+closure:
+  file: amd64-closure.tsv
+  packages: 351
+
+repository:
+  shared: "vault/linux/ubuntu/apt"

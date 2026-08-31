@@ -21,6 +21,10 @@ artifacts:
     sha256: f48b452316f9b213758e8659444029b961a24a07f99a1abb2a9f88b06f7c00c6
     role: multimodal-projector
 
+  - filename: dflash-Muse-Glimmer-30B-Q4_K_M.gguf
+    sha256: b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef
+    role: speculative-drafter
+
 vault:
   revision: vault/huggingface/meta-models/Muse-Glimmer-30B-GGUF/revisions/70bf1b61ac09f91b24d39038091b41c582bc5d7a
 
@@ -29,6 +33,7 @@ validation:
     - exact-upstream-revision
     - exact-model-sha256
     - exact-projector-sha256
+    - exact-dflash-sha256
     - llama-cpp-load
     - ai-forge-inference-regression
 

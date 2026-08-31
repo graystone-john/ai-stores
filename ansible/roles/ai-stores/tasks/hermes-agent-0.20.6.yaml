@@ -1,0 +1,13 @@
+---
+- name: Acquire Hermes Agent 0.20.6 source
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/../../modules/github/NousResearch/hermes-agent/0.20.6/scripts/acquire"
+  register: hermes_source_acquire
+  changed_when: false
+
+- name: Verify Hermes Agent AI Stores
+  ansible.builtin.command:
+    argv:
+      - "{{ playbook_dir }}/../../modules/hermes-agent/0.20.6/scripts/verify-store"
+  changed_when: false

@@ -1,0 +1,10 @@
+---
+- name: Build Hermes Agent 0.20.6 AI Stores
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  roles:
+    - role: ai-stores
+      vars:
+        ai_stores_module: hermes-agent-0.20.6
