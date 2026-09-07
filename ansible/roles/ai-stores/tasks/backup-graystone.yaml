@@ -1,0 +1,47 @@
+---
+- name: Create temporary backup runner directory
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: graystone-backup-
+  register: graystone_backup_runner
+
+- name: Run and report Graystone backup
+  block:
+    - name: Stage backup script
+      ansible.builtin.copy:
+        src: backup-graystone
+        dest: "{{ graystone_backup_runner.path }}/backup-graystone"
+        mode: "0700"
+
+    - name: Report backup start
+      ansible.builtin.debug:
+        msg:
+          - "Started: {{ lookup('pipe', 'date -u +%FT%TZ') }}"
+          - "Source: {{ graystone_backup_source }}"
+          - "Destination: {{ graystone_backup_mount }}"
+          - "Encryption: disabled"
+
+    - name: Create and verify USB backup
+      ansible.builtin.command:
+        argv:
+          - "{{ graystone_backup_runner.path }}/backup-graystone"
+      environment:
+        BACKUP_SOURCE: "{{ graystone_backup_source }}"
+        BACKUP_MOUNT: "{{ graystone_backup_mount }}"
+        BACKUP_UUID: "{{ graystone_backup_uuid }}"
+        LC_ALL: C
+      register: graystone_backup_result
+      changed_when: true
+
+  always:
+    - name: Report backup output
+      ansible.builtin.debug:
+        msg:
+          - "{{ graystone_backup_result.stdout_lines | default([]) }}"
+          - "{{ graystone_backup_result.stderr_lines | default([]) }}"
+          - "Elapsed: {{ graystone_backup_result.delta | default('unavailable') }}"
+
+    - name: Remove temporary backup runner
+      ansible.builtin.file:
+        path: "{{ graystone_backup_runner.path }}"
+        state: absent

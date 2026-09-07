@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+: "${BACKUP_SOURCE:?Required}"
+: "${BACKUP_MOUNT:?Required}"
+: "${BACKUP_UUID:?Required}"
+
+started="$(date +%s)"
+backup_dir=""
+
+finish() {
+    result=$?
+    trap - EXIT
+    echo "Backup finished: $(date -u +%FT%TZ)"
+    echo "Elapsed: $(( $(date +%s) - started )) seconds"
+    echo "Exit status: $result"
+    if [[ -n "$backup_dir" ]]; then
+        echo "Backup directory: $backup_dir"
+    fi
+    exit "$result"
+}
+trap finish EXIT
+
+echo "Backup started: $(date -u +%FT%TZ)"
+echo "Encryption: disabled"
+
+for tool in tar sha256sum findmnt mountpoint realpath du df flock mktemp; do
+    command -v "$tool" >/dev/null
+done
+
+source_dir="$(realpath -e -- "$BACKUP_SOURCE")"
+mount_dir="$(realpath -e -- "$BACKUP_MOUNT")"
+[[ -d "$source_dir" ]]
+mountpoint -q "$mount_dir"
+
+actual_uuid="$(findmnt -rn -M "$mount_dir" -o UUID)"
+if [[ "$actual_uuid" != "$BACKUP_UUID" ]]; then
+    echo "ERROR: backup filesystem UUID does not match." >&2
+    exit 1
+fi
+
+case "$mount_dir/" in
+    "$source_dir/"*)
+        echo "ERROR: backup destination is inside the source." >&2
+        exit 1
+        ;;
+esac
+
+# Prevent overlapping runs by this user.
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/graystone-backup-${UID}.lock"
+flock -n 9 || {
+    echo "ERROR: another backup is running." >&2
+    exit 1
+}
+
+source_bytes="$(du --apparent-size --block-size=1 -s "$source_dir" | awk '{print $1}')"
+available_bytes="$(df --block-size=1 --output=avail "$mount_dir" | tail -n 1 | tr -d ' ')"
+required_bytes=$(( source_bytes + source_bytes / 10 + 1073741824 ))
+if (( available_bytes < required_bytes )); then
+    echo "ERROR: insufficient free space, including backup margin." >&2
+    exit 1
+fi
+
+backup_dir="$(mktemp -d "$mount_dir/$(date -u +%Y-%m-%dT%H%M%SZ)-athena-XXXXXX")"
+partial="$backup_dir/graystone.tar.partial"
+
+tar --acls --xattrs --sparse -cpf "$partial" \
+    -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+
+echo "Comparing archive with source..."
+tar --compare --file="$partial" -C "$(dirname "$source_dir")"
+tar -tf "$partial" > "$backup_dir/archive-contents.txt"
+
+# FUTURE ENCRYPTION — deliberately disabled.
+# Select an encryption tool and recipient/key management first.
+# Encrypt the verified tar to a separate temporary output.
+# Verify decryption and archive readability before publishing it.
+# Checksum the encrypted artifact, then remove the plaintext archive.
+# Never put a passphrase or private encryption key in this script or Git.
+
+(
+    cd "$backup_dir"
+    sha256sum graystone.tar.partial > SHA256SUMS.partial
+    sync
+    sha256sum -c SHA256SUMS.partial
+)
+
+mv "$partial" "$backup_dir/graystone.tar"
+sed 's/graystone\.tar\.partial$/graystone.tar/' \
+    "$backup_dir/SHA256SUMS.partial" > "$backup_dir/SHA256SUMS"
+rm "$backup_dir/SHA256SUMS.partial"
+
+printf 'Verified backup completed at %s\n' "$(date -u +%FT%TZ)" \
+    > "$backup_dir/COMPLETE"
+sync
+echo "Backup verified successfully."

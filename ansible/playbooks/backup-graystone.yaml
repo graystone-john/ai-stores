@@ -1,0 +1,17 @@
+---
+- name: Back up Graystone to USB on Athena
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+
+  vars:
+    graystone_backup_source: "{{ lookup('env', 'HOME') }}/graystone"
+    graystone_backup_mount: /media/nispoe/14B45075B4505B76
+    graystone_backup_uuid: "14B45075B4505B76"
+
+  tasks:
+    - name: Back up through the existing AI Stores role
+      ansible.builtin.include_role:
+        name: ai-stores
+        tasks_from: backup-graystone.yaml
