@@ -1,0 +1,19 @@
+{
+    "capture_id": "20260907T024648Z-awpl1yky",
+    "captured_at_utc": "2026-09-07T02:46:48.335973+00:00",
+    "configuration_id": "ubuntu-noble-amd64-cuda12-sm86-daedalus-native",
+    "installed_version": "version: 0.2.0-dev (build 10612, commit 758443071)\nbuilt with GNU 13.3.0 for Linux x86_64",
+    "original_install_prefix": "/opt/ai-forge/llama.cpp/b10612-cuda-sm86/runtime",
+    "package_evidence": "Full installed-package inventory; not a runtime dependency closure.",
+    "schema_version": 1,
+    "source_commit": "7584430716ee229751771ed0d6bbcb780d105eeb",
+    "source_commit_details": "7584430716ee229751771ed0d6bbcb780d105eeb\n2026-08-24T13:39:31+03:00\ntests : disable DOTS3NOTE arch test for WebGPU (#27654)",
+    "source_upstream": "https://github.com/ggml-org/llama.cpp.git",
+    "ui_archive_sha256": "3f7a482b86620b5dfbaf3432927bd357e679440237d3d83c27c07423cecf1f6d",
+    "validation": {
+        "clean_buildless_deployment": "pending",
+        "installed_version": "passed",
+        "muse_vision_and_hermes": "pending",
+        "server_library_resolution": "passed"
+    }
+}
