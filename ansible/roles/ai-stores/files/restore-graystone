@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+: "${RESTORE_BACKUP_DIR:?Required: directory containing graystone.tar and SHA256SUMS}"
+: "${RESTORE_DESTINATION:?Required: new destination directory}"
+
+started="$(date +%s)"
+
+finish() {
+    result=$?
+    trap - EXIT
+    echo "Restore finished: $(date -u +%FT%TZ)"
+    echo "Elapsed: $(( $(date +%s) - started )) seconds"
+    echo "Exit status: $result"
+    exit "$result"
+}
+trap finish EXIT
+
+echo "Restore started: $(date -u +%FT%TZ)"
+echo "Encryption: disabled"
+
+for tool in python3 tar realpath mktemp; do
+    command -v "$tool" >/dev/null
+done
+
+backup_dir="$(realpath -e -- "$RESTORE_BACKUP_DIR")"
+archive="$backup_dir/graystone.tar"
+destination="$(realpath -m -- "$RESTORE_DESTINATION")"
+
+[[ -f "$backup_dir/COMPLETE" ]] || {
+    echo "ERROR: backup completion marker missing." >&2
+    exit 1
+}
+
+if [[ -e "$destination" || -L "$destination" ]]; then
+    echo "ERROR: destination already exists; choose a new directory." >&2
+    exit 1
+fi
+
+# FUTURE ENCRYPTION — deliberately disabled.
+# Verify the encrypted artifact checksum before decryption.
+# Decrypt into private temporary storage using an approved tool.
+# Obtain credentials interactively or from an external secret store.
+# Never place private keys or passphrases in this script or Git.
+# Validate the decrypted archive before extraction.
+# Clean up temporary plaintext after success or failure.
+
+echo "Verifying checksum and archive paths: $(date -u +%FT%TZ)"
+python3 - "$backup_dir" <<'PY'
+from pathlib import Path, PurePosixPath
+import hashlib
+import sys
+import tarfile
+
+backup = Path(sys.argv[1])
+archive = backup / "graystone.tar"
+rows = (backup / "SHA256SUMS").read_text().splitlines()
+if len(rows) != 1:
+    raise SystemExit("Expected exactly one checksum entry.")
+fields = rows[0].split()
+if len(fields) != 2 or fields[1] != "graystone.tar":
+    raise SystemExit("Unexpected checksum filename.")
+
+digest = hashlib.sha256()
+with archive.open("rb") as stream:
+    for block in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(block)
+if digest.hexdigest() != fields[0]:
+    raise SystemExit("Archive checksum mismatch.")
+
+members = {}
+with tarfile.open(archive, "r:") as tar:
+    for member in tar:
+        path = PurePosixPath(member.name)
+        if (
+            path.is_absolute() or ".." in path.parts
+            or not path.parts or path.parts[0] != "graystone"
+        ):
+            raise SystemExit(f"Unexpected archive path: {member.name}")
+        if not (member.isfile() or member.isdir()
+                or member.issym() or member.islnk()):
+            raise SystemExit(f"Unsupported archive entry: {member.name}")
+        key = str(path)
+        if key in members:
+            raise SystemExit(f"Duplicate archive path: {key}")
+        members[key] = member
+
+# Do not allow extraction through a symlink or other non-directory.
+for name, member in members.items():
+    for parent in PurePosixPath(name).parents:
+        entry = members.get(str(parent))
+        if entry is not None and not entry.isdir():
+            raise SystemExit(f"Non-directory archive parent: {parent}")
+    if member.islnk():
+        target = PurePosixPath(member.linkname)
+        if target.is_absolute() or ".." in target.parts:
+            raise SystemExit(f"Unsafe hard link: {name}")
+        entry = members.get(str(target))
+        if entry is None or not entry.isfile():
+            raise SystemExit(f"Unsupported hard link target: {name}")
+
+print("Checksum and archive structure verified.")
+PY
+
+parent="$(dirname "$destination")"
+[[ -d "$parent" ]] || {
+    echo "ERROR: destination parent must already exist." >&2
+    exit 1
+}
+staging="$(mktemp -d "$parent/.graystone-restore-XXXXXXXX")"
+echo "Restore staging directory: $staging"
+
+echo "Extracting archive: $(date -u +%FT%TZ)"
+tar --extract --acls --xattrs --same-permissions --no-same-owner \
+    --file="$archive" --directory="$staging"
+
+echo "Comparing restored files with archive: $(date -u +%FT%TZ)"
+python3 - "$archive" "$staging" <<'VERIFY'
+import os
+import subprocess
+import sys
+
+result = subprocess.run(
+    ["tar", "--compare", "--file=" + sys.argv[1],
+     "--directory=" + sys.argv[2]],
+    text=True, capture_output=True,
+    env={**os.environ, "LC_ALL": "C"},
+)
+lines = result.stdout.splitlines()
+ownership = [
+    line for line in lines
+    if line.endswith((": Uid differs", ": Gid differs"))
+]
+unexpected = [line for line in lines if line not in ownership]
+
+if result.returncode not in (0, 1) or result.stderr or unexpected:
+    print(result.stdout, end="")
+    print(result.stderr, end="", file=sys.stderr)
+    raise SystemExit("Restore comparison failed.")
+if result.returncode == 1 and not ownership:
+    raise SystemExit("Comparison failed without recognized ownership differences.")
+
+print(f"Archive comparison passed; {len(ownership)} ownership differences "
+      "accepted for restore-as-current-user mode.")
+VERIFY
+
+# Rename without replacing a destination created during restoration.
+python3 - "$staging" "$destination" <<'PY'
+import ctypes
+import os
+import sys
+
+libc = ctypes.CDLL(None, use_errno=True)
+rename = libc.renameat2
+rename.argtypes = [
+    ctypes.c_int, ctypes.c_char_p,
+    ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+]
+rename.restype = ctypes.c_int
+if rename(-100, os.fsencode(sys.argv[1]),
+          -100, os.fsencode(sys.argv[2]), 1) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+PY
+
+echo "Restore verified: $destination/graystone"
