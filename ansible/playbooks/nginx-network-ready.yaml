@@ -1,0 +1,12 @@
+---
+- name: Configure AI Stores nginx startup on Athena
+  hosts: local
+  connection: local
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Configure nginx through the existing AI Stores role
+      ansible.builtin.include_role:
+        name: ai-stores
+        tasks_from: nginx-network-ready.yaml

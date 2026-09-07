@@ -1,0 +1,12 @@
+---
+- name: Acquire llama b10612 UI assets
+  hosts: local
+  connection: local
+  gather_facts: false
+
+  vars:
+    ai_stores_root: "{{ playbook_dir }}/../.."
+    ai_stores_module: llama-ui-b10612
+
+  roles:
+    - ai-stores

@@ -1,0 +1,14 @@
+---
+- name: Acquire pinned official llama.cpp source
+  ansible.builtin.command:
+    argv:
+      - "{{ ai_stores_root }}/modules/github/ggml-org/llama.cpp/7584430716ee229751771ed0d6bbcb780d105eeb/scripts/acquire-source"
+  register: llama_source_acquire
+  changed_when: "'already valid' not in llama_source_acquire.stdout"
+
+- name: Report llama.cpp source acquisition
+  ansible.builtin.debug:
+    var: llama_source_acquire.stdout_lines
+
+- name: Acquire matching llama.cpp UI
+  ansible.builtin.include_tasks: llama-ui-b10612.yaml

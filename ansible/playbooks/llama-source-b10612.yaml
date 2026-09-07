@@ -1,0 +1,12 @@
+---
+- name: Acquire llama.cpp b10612 source and UI
+  hosts: local
+  connection: local
+  gather_facts: false
+
+  vars:
+    ai_stores_root: "{{ playbook_dir }}/../.."
+    ai_stores_module: llama-source-b10612
+
+  roles:
+    - ai-stores

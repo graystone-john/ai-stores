@@ -1,0 +1,66 @@
+#!/usr/bin/python3
+import csv
+import sys
+import apt
+
+if len(sys.argv) != 2:
+    raise SystemExit("Usage: capture-installed-apt-closure ROOTS.tsv")
+
+cache = apt.Cache()
+pending = []
+
+with open(sys.argv[1]) as stream:
+    for row in csv.reader(stream, delimiter="\t"):
+        if not row or row[0].startswith("#"):
+            continue
+        name, expected = row
+        installed = cache[name].installed
+        if installed is None or installed.version != expected:
+            raise SystemExit(f"Installed version does not match: {name}={expected}")
+        pending.append(installed)
+
+seen = {}
+
+while pending:
+    version = pending.pop()
+    name = version.package.shortname
+
+    if version.architecture not in ("amd64", "all"):
+        raise SystemExit(f"Unexpected architecture: {name}/{version.architecture}")
+
+    if name in seen:
+        if seen[name] != version.version:
+            raise SystemExit(f"Conflicting versions for {name}")
+        continue
+
+    seen[name] = version.version
+
+    for group in version.get_dependencies("Depends", "PreDepends"):
+        selected = None
+        for alternative in group.or_dependencies:
+            matches = [
+                target for target in alternative.installed_target_versions
+                if target.architecture in ("amd64", "all")
+            ]
+            if matches:
+                selected = sorted(
+                    matches,
+                    key=lambda target: target.package.fullname
+                )[0]
+                break
+
+        if selected is None:
+            requirement = " | ".join(
+                alternative.rawstr for alternative in group.or_dependencies
+            )
+            raise SystemExit(
+                f"No installed dependency satisfies {name}: {requirement}"
+            )
+
+        pending.append(selected)
+
+print("# Package\tVersion")
+for name, version in sorted(seen.items()):
+    print(f"{name}\t{version}")
+
+print(f"Captured {len(seen)} packages", file=sys.stderr)

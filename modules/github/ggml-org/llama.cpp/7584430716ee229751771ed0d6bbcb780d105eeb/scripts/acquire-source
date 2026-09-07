@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(git -C "$MODULE_DIR" rev-parse --show-toplevel)"
+
+COMMIT=7584430716ee229751771ed0d6bbcb780d105eeb
+UPSTREAM=https://github.com/ggml-org/llama.cpp.git
+DEST="$STORE_ROOT/vault/github/ggml-org/llama.cpp/$COMMIT/source.git"
+PIN=refs/heads/pinned
+
+mkdir -p "$(dirname "$DEST")"
+
+if [[ ! -e "$DEST" ]]; then
+    git init --bare "$DEST"
+fi
+
+if [[ "$(git -C "$DEST" rev-parse --is-bare-repository)" != true ]]; then
+    echo "ERROR: expected a bare Git repository at $DEST" >&2
+    exit 1
+fi
+
+if [[ "$(git -C "$DEST" rev-parse --is-shallow-repository)" != false ]]; then
+    echo "ERROR: source repository must contain full commit history" >&2
+    exit 1
+fi
+
+actual="$(git -C "$DEST" rev-parse --verify "$PIN^{commit}" 2>/dev/null || true)"
+
+if [[ "$actual" == "$COMMIT" ]]; then
+    git -C "$DEST" fsck --full
+    echo "Pinned llama.cpp source already valid"
+    exit 0
+fi
+
+git -C "$DEST" fetch --no-tags "$UPSTREAM" "$COMMIT"
+
+actual="$(git -C "$DEST" rev-parse --verify 'FETCH_HEAD^{commit}')"
+if [[ "$actual" != "$COMMIT" ]]; then
+    echo "ERROR: upstream source revision does not match $COMMIT" >&2
+    exit 1
+fi
+
+git -C "$DEST" update-ref "$PIN" "$COMMIT"
+git -C "$DEST" symbolic-ref HEAD "$PIN"
+git -C "$DEST" fsck --full
+
+echo "Acquired and verified pinned llama.cpp source:"
+echo "$DEST"
+git -C "$DEST" show -s --format='commit=%H%ncommit_date=%cI%nsubject=%s' "$PIN"

@@ -1,0 +1,23 @@
+name: llama-ui-b10612
+type: upstream-archive
+
+upstream:
+  provider: Hugging Face
+  bucket: ggml-org/llama-ui
+  revision: b10612
+  url: https://huggingface.co/buckets/ggml-org/llama-ui/resolve/b10612/dist.tar.gz
+
+artifact:
+  filename: dist.tar.gz
+  sha256: 3f7a482b86620b5dfbaf3432927bd357e679440237d3d83c27c07423cecf1f6d
+
+vault:
+  path: vault/huggingface/buckets/ggml-org/llama-ui/b10612
+
+compatibility:
+  llama_cpp_commit: 7584430716ee229751771ed0d6bbcb780d105eeb
+  llama_cpp_build: b10612
+
+provenance:
+  source_evidence: daedalus-working-build-ui-archive
+  artifact_policy: reacquire-from-official-upstream

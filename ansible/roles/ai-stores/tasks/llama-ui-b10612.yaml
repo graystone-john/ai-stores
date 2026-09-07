@@ -1,0 +1,11 @@
+---
+- name: Acquire official llama b10612 UI archive
+  ansible.builtin.command:
+    argv:
+      - "{{ ai_stores_root }}/modules/huggingface/buckets/ggml-org/llama-ui/b10612/scripts/acquire-ui"
+  register: llama_ui_acquire
+  changed_when: "'already valid' not in llama_ui_acquire.stdout"
+
+- name: Report llama UI acquisition
+  ansible.builtin.debug:
+    var: llama_ui_acquire.stdout_lines

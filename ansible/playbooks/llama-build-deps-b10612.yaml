@@ -1,0 +1,12 @@
+---
+- name: Acquire llama.cpp b10612 build dependencies
+  hosts: local
+  connection: local
+  gather_facts: false
+
+  vars:
+    ai_stores_root: "{{ playbook_dir }}/../.."
+    ai_stores_module: llama-build-deps-b10612
+
+  roles:
+    - ai-stores

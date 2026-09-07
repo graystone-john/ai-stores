@@ -1,0 +1,47 @@
+---
+- name: Record llama.cpp build dependency acquisition start
+  ansible.builtin.set_fact:
+    llama_build_deps_start_epoch: "{{ lookup('pipe', 'date +%s') }}"
+    llama_build_deps_start_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Report llama.cpp build dependency acquisition start
+  ansible.builtin.debug:
+    msg: >-
+      AI Stores: llama.cpp b10612 build dependency acquisition
+      and APT index rebuild started at {{ llama_build_deps_start_time }}.
+
+- name: Acquire and report llama.cpp build dependencies
+  block:
+    - name: Acquire exact llama.cpp build dependencies and rebuild APT indexes
+      ansible.builtin.command:
+        argv:
+          - "{{ ai_stores_root }}/modules/linux/ubuntu/noble/llama-cpp-build/b10612/amd64/scripts/build-apt-repository"
+      register: llama_build_deps_acquire
+      changed_when: true
+
+    - name: Report build dependency acquisition
+      ansible.builtin.debug:
+        var: llama_build_deps_acquire.stdout_lines
+
+  always:
+    - name: Record llama.cpp build dependency acquisition end
+      ansible.builtin.set_fact:
+        llama_build_deps_end_epoch: "{{ lookup('pipe', 'date +%s') }}"
+        llama_build_deps_end_time: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Report llama.cpp build dependency acquisition timing
+      ansible.builtin.debug:
+        msg:
+          - "Started: {{ llama_build_deps_start_time }}"
+          - "Ended: {{ llama_build_deps_end_time }}"
+          - >-
+            Elapsed: {{
+              (llama_build_deps_end_epoch | int) -
+              (llama_build_deps_start_epoch | int)
+            }} seconds.
+          - >-
+            Result: {{
+              'success'
+              if (llama_build_deps_acquire.rc | default(-1) | int) == 0
+              else 'failed'
+            }}

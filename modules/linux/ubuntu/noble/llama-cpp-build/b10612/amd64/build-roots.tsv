@@ -1,0 +1,9 @@
+# Package	Version
+build-essential	12.10ubuntu1
+cmake	3.28.3-1build7
+g++-13	13.3.0-6ubuntu2~24.04.1
+gcc-13	13.3.0-6ubuntu2~24.04.1
+git	1:2.43.0-1ubuntu7.3
+gzip	1.12-1ubuntu3.2
+libcurl4-openssl-dev	8.5.0-2ubuntu10.13
+nvidia-cuda-toolkit	12.0.140~12.0.1-4build4

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(git -C "$MODULE_DIR" rev-parse --show-toplevel)"
+DEST="$STORE_ROOT/vault/huggingface/buckets/ggml-org/llama-ui/b10612"
+EXPECTED=3f7a482b86620b5dfbaf3432927bd357e679440237d3d83c27c07423cecf1f6d
+URL=https://huggingface.co/buckets/ggml-org/llama-ui/resolve/b10612/dist.tar.gz
+
+mkdir -p "$DEST"
+
+verify() {
+    printf '%s  %s\n' "$EXPECTED" "$1" | sha256sum --check --status
+}
+
+if [[ -f "$DEST/dist.tar.gz" ]] && verify "$DEST/dist.tar.gz"; then
+    echo "UI archive already valid"
+    exit 0
+fi
+
+WORK="$(mktemp -d "$DEST/.acquire-XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+curl --fail --location --retry 3 \
+    "$URL?download=true" \
+    --output "$WORK/dist.tar.gz"
+
+if ! verify "$WORK/dist.tar.gz"; then
+    echo "ERROR: official b10612 UI differs from the recorded working archive." >&2
+    sha256sum "$WORK/dist.tar.gz" >&2
+    exit 1
+fi
+
+mv "$WORK/dist.tar.gz" "$DEST/dist.tar.gz"
+printf '%s  dist.tar.gz\n' "$EXPECTED" > "$DEST/dist.tar.gz.sha256"
+
+echo "Acquired and verified official b10612 UI:"
+echo "$DEST/dist.tar.gz"

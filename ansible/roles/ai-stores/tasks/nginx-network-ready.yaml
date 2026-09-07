@@ -1,0 +1,28 @@
+---
+- name: Create nginx service override directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/nginx.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install provisioning-address startup override
+  ansible.builtin.copy:
+    src: nginx-provisioning-network.conf
+    dest: /etc/systemd/system/nginx.service.d/provisioning-network.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: nginx_network_override
+
+- name: Reload systemd after override change
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: nginx_network_override.changed
+
+- name: Enable and start nginx
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started

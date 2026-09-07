@@ -41,3 +41,15 @@
   ansible.builtin.include_tasks: ipxe.yaml
   when: ai_stores_module == "ipxe"
 
+
+- name: Acquire llama b10612 UI assets
+  ansible.builtin.include_tasks: llama-ui-b10612.yaml
+  when: ai_stores_module == "llama-ui-b10612"
+
+- name: Acquire llama.cpp b10612 source and UI
+  ansible.builtin.include_tasks: llama-source-b10612.yaml
+  when: ai_stores_module == "llama-source-b10612"
+
+- name: Acquire llama.cpp b10612 build dependencies
+  ansible.builtin.include_tasks: llama-build-deps-b10612.yaml
+  when: ai_stores_module == "llama-build-deps-b10612"

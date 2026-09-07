@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODULE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STORE_ROOT="$(git -C "$MODULE_DIR" rev-parse --show-toplevel)"
+MANIFEST="$MODULE_DIR/amd64-closure.tsv"
+
+if [[ ! -s "$MANIFEST" ]]; then
+    echo "ERROR: missing dependency manifest: $MANIFEST" >&2
+    exit 1
+fi
+
+exec bash \
+    "$STORE_ROOT/modules/linux/ubuntu/nvidia/595.84/scripts/build-apt-repository" \
+    "$MANIFEST"
