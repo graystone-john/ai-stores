@@ -1,0 +1,649 @@
+#!/usr/bin/python3
+"""Pinned iPXE evidence, canonical acquisition, local APT repository and offline build.
+
+Uses only Python's standard library except capture (Ubuntu python3-apt).
+Never modifies existing AI Stores modules, system APT sources, or a PXE deployment.
+"""
+import argparse
+import datetime as dt
+import gzip
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.parse
+import urllib.request
+import urllib.error
+
+COMMIT = "ff6e52063e0b37062394fe37b9788af25175e7af"
+UPSTREAM = "https://github.com/ipxe/ipxe.git"
+ROOTS = "build-essential gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu liblzma-dev git perl python3 python3-apt dpkg-dev ca-certificates gzip xz-utils patch util-linux".split()
+OFFICIAL = {"archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com", "old-releases.ubuntu.com", "snapshot.ubuntu.com"}
+
+
+def fail(message):
+    raise RuntimeError(message)
+
+
+def run(argv, **kw):
+    return subprocess.run([str(x) for x in argv], check=True, **kw)
+
+
+def output(argv, **kw):
+    return run(argv, stdout=subprocess.PIPE, text=True, **kw).stdout.strip()
+
+
+def sha(path):
+    h = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def write_json(path, data):
+    Path(path).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def files_under(path):
+    for item in sorted(Path(path).rglob("*")):
+        if item.is_symlink():
+            fail(f"Symlink is not allowed in a sealed artifact: {item}")
+        if item.is_file():
+            yield item
+
+
+def seal(path):
+    path = Path(path)
+    entries = {str(p.relative_to(path)): sha(p) for p in files_under(path)
+               if p != path / "checksums.json"}
+    write_json(path / "checksums.json", entries)
+
+
+def verify(path):
+    path = Path(path)
+    entries = json.loads((path / "checksums.json").read_text())
+    actual = {str(p.relative_to(path)) for p in files_under(path)
+              if p != path / "checksums.json"}
+    if set(entries) != actual:
+        fail(f"Missing or extra files in {path}")
+    for name, digest in entries.items():
+        item = path / name
+        if Path(name).is_absolute() or ".." in Path(name).parts or sha(item) != digest:
+            fail(f"Checksum/path verification failed: {name}")
+    return entries
+
+
+def native_arch():
+    return output(["dpkg", "--print-architecture"])
+
+
+def os_release():
+    return dict(line.split("=", 1) for line in Path("/etc/os-release").read_text().splitlines()
+                if "=" in line)
+
+
+def require_noble_arm():
+    data = os_release()
+    if native_arch() != "arm64" or data.get("ID", "").strip('"') != "ubuntu" or data.get("VERSION_ID", "").strip('"') != "24.04":
+        fail("This recipe requires Ubuntu 24.04 ARM64 (Athena), with an x86-64 cross-compiler.")
+
+
+def offline():
+    names = [name for _, name in socket.if_nameindex() if name != "lo"]
+    if names:
+        fail("Run this operation in an isolated network namespace (sudo unshare --net -- ...). "
+             "Network interfaces are still present: " + ", ".join(names))
+
+
+def package_key(row):
+    return row["name"] if row["architecture"] == "all" else row["name"] + ":" + row["architecture"]
+
+
+def version_metadata(v):
+    """Return canonical download metadata only, never a replacement version."""
+    if not v.downloadable or not any(o.trusted and o.origin == "Ubuntu" for o in v.origins):
+        return None
+    urls = [u for u in v.uris if urllib.parse.urlparse(u).hostname in OFFICIAL]
+    digest = v.record.get("SHA256", "")
+    if not urls or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None
+    return {"name": v.package.shortname, "architecture": v.architecture, "version": v.version,
+            "uri": urls[0], "sha256": digest, "size": v.size,
+            "origins": [{"origin": o.origin, "label": o.label, "archive": o.archive,
+                         "site": o.site, "trusted": o.trusted} for o in v.origins]}
+
+
+def index_environment(root):
+    """Use only private APT configuration/index/cache paths; read host status."""
+    root = Path(root).resolve()
+    empty = root / "empty"
+    cache = root / "cache"
+    empty.mkdir(exist_ok=True)
+    (cache / "archives/partial").mkdir(parents=True, exist_ok=True)
+    settings = {
+        "Dir::Etc::main": "/dev/null", "Dir::Etc::parts": str(empty),
+        "Dir::Etc::sourcelist": str(root / "evidence/snapshot.sources"),
+        "Dir::Etc::sourceparts": str(empty), "Dir::Etc::trusted": "/dev/null",
+        "Dir::Etc::trustedparts": str(empty),
+        "Dir::State::lists": str(root / "evidence/lists"),
+        "Dir::State::status": "/var/lib/dpkg/status",
+        "Dir::Cache::pkgcache": str(cache / "pkgcache.bin"),
+        "Dir::Cache::srcpkgcache": str(cache / "srcpkgcache.bin"),
+        "Dir::Cache::archives": str(cache / "archives"),
+        "Dir::Log": str(cache), "APT::Architecture": "arm64",
+        "Acquire::Languages": "none", "APT::Update::Error-Mode": "any",
+        # Historical metadata can be expired; signatures must still verify.
+        "Acquire::Check-Valid-Until": "false",
+        "Acquire::AllowInsecureRepositories": "false",
+        "APT::Get::AllowUnauthenticated": "false",
+    }
+    config = root / "apt-private.conf"
+    config.write_text("\n".join(k + " " + json.dumps(v) + ";" for k, v in settings.items()) +
+                      '\nAPT::Architectures { "arm64"; };\n')
+    return {**os.environ, "APT_CONFIG": str(config)}
+
+
+def snapshot_index(args):
+    require_noble_arm()
+    if not re.fullmatch(r"\d{8}T\d{6}Z", args.date):
+        fail("Use snapshot date YYYYMMDDTHHMMSSZ")
+    date = dt.datetime.strptime(args.date, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc)
+    if date > dt.datetime.now(dt.timezone.utc):
+        fail("Snapshot date must not be in the future")
+    root = Path(args.output).resolve()
+    if root.exists():
+        verify(root / "evidence")
+        info = json.loads((root / "evidence/index.json").read_text())
+        if info["date"] != args.date:
+            fail("Existing index has a different date")
+        print(f"Existing snapshot index verified: {root}")
+        return
+    root.mkdir(parents=True)
+    evidence = root / "evidence"
+    (evidence / "lists/partial").mkdir(parents=True)
+    keyring = Path("/usr/share/keyrings/ubuntu-archive-keyring.gpg")
+    try:
+        shutil.copy2(keyring, evidence / "ubuntu-archive-keyring.gpg")
+        (evidence / "snapshot.sources").write_text(
+            f"Types: deb\nURIs: https://snapshot.ubuntu.com/ubuntu/{args.date}/\n"
+            "Suites: noble noble-updates noble-security\nComponents: main universe\n"
+            "Architectures: arm64\nSigned-By: " + str(evidence / "ubuntu-archive-keyring.gpg") +
+            "\n")
+        print(f"Downloading signed Ubuntu ARM64 indexes for {args.date}; no package installation.", flush=True)
+        run(["apt-get", "update"], env=index_environment(root))
+        if not list((evidence / "lists").glob("*InRelease")):
+            fail("No signed InRelease metadata was downloaded")
+        write_json(evidence / "index.json", {"schema": 1, "date": args.date, "architecture": "arm64",
+                   "downloaded_at": now(), "source": "Official Ubuntu Snapshot service via explicit timestamp URI",
+                   "signature_check": "apt-get update succeeded; only Ubuntu archive keyring trusted",
+                   "location": str(root)})
+        seal(evidence)
+    except BaseException:
+        shutil.rmtree(root)
+        raise
+    print(f"Snapshot indexes ready: {root}")
+
+
+def read_snapshot_records(args):
+    """Private subprocess: libapt global settings cannot affect the parent cache."""
+    import apt
+    cache = apt.Cache()
+    requests = json.load(sys.stdin)
+    found = []
+    for row in requests:
+        key = package_key(row)
+        if key not in cache:
+            continue
+        for v in cache[key].versions:
+            if v.version != row["version"] or v.architecture != row["architecture"]:
+                continue
+            data = version_metadata(v)
+            if data and urllib.parse.urlparse(data["uri"]).hostname == "snapshot.ubuntu.com":
+                found.append(data)
+                break
+    print(json.dumps(found))
+
+
+def recover_metadata(rows, indexes):
+    missing = [r for r in rows if "sha256" not in r]
+    recovered = {}
+    for index in indexes:
+        if not missing:
+            break
+        root = Path(index).resolve()
+        verify(root / "evidence")
+        info = json.loads((root / "evidence/index.json").read_text())
+        if info["architecture"] != "arm64" or info["location"] != str(root):
+            fail("Snapshot index architecture/location mismatch; recreate at its intended path")
+        response = run(["/usr/bin/python3", Path(__file__).resolve(), "_read-snapshot-records"],
+                       input=json.dumps(missing), text=True, stdout=subprocess.PIPE,
+                       env=index_environment(root))
+        requested = {(r["name"], r["architecture"], r["version"]) for r in missing}
+        for row in json.loads(response.stdout):
+            key = (row["name"], row["architecture"], row["version"])
+            if key not in requested:
+                fail("Snapshot resolver returned an unrequested version")
+            if urllib.parse.urlparse(row["uri"]).hostname != "snapshot.ubuntu.com":
+                fail("Snapshot resolver returned a non-snapshot URI")
+            recovered[key] = {**row, "snapshot_date": info["date"],
+                              "snapshot_index_manifest_sha256": sha(root / "evidence/checksums.json")}
+        missing = [r for r in missing if (r["name"], r["architecture"], r["version"]) not in recovered]
+    if missing:
+        details = "\n".join("  " + package_key(r) + "=" + r["version"] for r in missing)
+        fail("No trusted Ubuntu metadata for these exact installed packages:\n" + details +
+             "\nCreate historical indexes with snapshot-index, then pass --snapshot-index PATH to capture "
+             "(repeat for multiple dates). No versions were substituted.")
+    return [recovered.get((r["name"], r["architecture"], r["version"]), r) for r in rows]
+
+
+def apt_closure(roots, indexes=()):
+    try:
+        import apt
+    except ImportError:
+        fail("Run with /usr/bin/python3; Ubuntu python3-apt must be installed.")
+    cache = apt.Cache()
+    pending, seen, root_rows = [], {}, []
+    for name in roots:
+        if name not in cache or cache[name].installed is None:
+            fail(f"Required build package is not installed: {name}. Install it before capturing.")
+        v = cache[name].installed
+        pending.append(v)
+        root_rows.append({"name": v.package.shortname, "architecture": v.architecture, "version": v.version})
+    while pending:
+        v = pending.pop()
+        name, arch = v.package.shortname, v.architecture
+        if arch not in ("arm64", "all"):
+            fail(f"Unexpected host package architecture: {name}:{arch}")
+        key = (name, arch)
+        if key in seen:
+            if seen[key]["version"] != v.version:
+                fail(f"Conflicting installed versions: {name}")
+            continue
+        # Traverse installed dependencies even if their download metadata has
+        # disappeared from today's indexes. Recover metadata only afterward.
+        seen[key] = version_metadata(v) or {"name": name, "architecture": arch, "version": v.version}
+        for group in v.get_dependencies("Depends", "PreDepends"):
+            selected = None
+            for alternative in group.or_dependencies:
+                matches = [t for t in alternative.installed_target_versions if t.architecture in ("arm64", "all")]
+                if matches:
+                    selected = sorted(matches, key=lambda t: t.package.fullname)[0]
+                    break
+            if selected is None:
+                requirement = " | ".join(a.rawstr for a in group.or_dependencies)
+                fail(f"No installed dependency satisfies {name}: {requirement}")
+            pending.append(selected)
+    return root_rows, recover_metadata(sorted(seen.values(), key=lambda r: (r["name"], r["architecture"])), indexes)
+
+
+def capture(args):
+    require_noble_arm()
+    src = Path(args.evidence).resolve()
+    dest = Path(args.snapshot).resolve()
+    if dest.exists():
+        fail(f"Snapshot already exists; select a new path: {dest}")
+    commit = output(["git", "-C", src / "source", "rev-parse", "HEAD"])
+    if commit != COMMIT:
+        fail(f"Expected tested commit {COMMIT}; found {commit}")
+    roots, packages = apt_closure(ROOTS, args.snapshot_index)
+    patch = run(["git", "-C", src / "source", "diff", "HEAD", "--binary"], stdout=subprocess.PIPE).stdout
+    changed = output(["git", "-C", src / "source", "diff", "HEAD", "--name-only"]).splitlines()
+    if changed != ["src/drivers/net/efi/snponly.c"]:
+        fail(f"Unexpected tracked source changes: {changed}")
+    # Refuse untracked source code rather than silently omit it. Ignored local
+    # configuration is deliberately copied in full below.
+    untracked = output(["git", "-C", src / "source", "ls-files", "--others", "--exclude-standard"])
+    if untracked:
+        fail("Review untracked source files before capture:\n" + untracked)
+    local = src / "source/src/config/local"
+    if not (local / "general.h").is_file():
+        fail("Missing local/general.h")
+    for name in ("native-auto.ipxe", "native-forge.ipxe", "ipxe-native-auto.efi", "source-original.tar.gz"):
+        if not (src / name).is_file():
+            fail(f"Missing evidence: {name}")
+    for sums in src.glob("SHA256SUMS*"):
+        run(["sha256sum", "-c", sums.name], cwd=src)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=dest.name + ".partial-", dir=dest.parent))
+    try:
+        evidence = work / "capture/evidence"
+        recipe = work / "capture/recipe"
+        evidence.mkdir(parents=True)
+        recipe.mkdir()
+        for p in src.iterdir():
+            if p.is_file() and (p.suffix in (".efi", ".ipxe", ".patch", ".h", ".log", ".gz") or p.name.startswith("SHA256SUMS") or p.name == "source-commit.txt"):
+                if p.is_symlink():
+                    fail(f"Evidence symlink requires review: {p}")
+                shutil.copy2(p, evidence / p.name)
+        for p in files_under(local):
+            to = recipe / "local" / p.relative_to(local)
+            to.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, to)
+        (recipe / "source.patch").write_bytes(patch)
+        for name in ("native-auto.ipxe", "native-forge.ipxe", "native-diagnostic.ipxe", "diagnostic.ipxe"):
+            if (src / name).exists():
+                shutil.copy2(src / name, recipe / name)
+        # Signed index headers retained as provenance evidence, not a package cache.
+        for p in Path("/var/lib/apt/lists").glob("*InRelease"):
+            if any(host.replace(".", "_") in p.name or host in p.name for host in OFFICIAL):
+                target = evidence / "apt-index-headers" / p.name
+                target.parent.mkdir(exist_ok=True)
+                shutil.copy2(p, target)
+        for index in args.snapshot_index:
+            root = Path(index).resolve()
+            info = json.loads((root / "evidence/index.json").read_text())
+            # Retain the signed indexes supporting historical package hashes;
+            # subsequent offline build does not depend on this external cache.
+            verify(root / "evidence")
+            target = evidence / "snapshot-indexes" / info["date"]
+            if not target.exists():
+                shutil.copytree(root / "evidence", target)
+        compiler = output(["x86_64-linux-gnu-gcc", "-dumpmachine"])
+        if compiler != "x86_64-linux-gnu":
+            fail("Unexpected compiler target: " + compiler)
+        write_json(work / "capture/capture.json", {
+            "schema": 1, "captured_at": now(), "commit": commit, "upstream": UPSTREAM,
+            "commit_epoch": int(output(["git", "-C", src / "source", "show", "-s", "--format=%ct", "HEAD"])),
+            "host_architecture": "arm64", "target": "bin-x86_64-efi/ipxe.efi", "cross": "x86_64-linux-gnu-",
+            "roots": roots, "packages": packages, "os_release": os_release(),
+            "compiler": output(["x86_64-linux-gnu-gcc", "--version"]),
+            "linker": output(["x86_64-linux-gnu-ld", "--version"]),
+            "validation": {"automatic_diagnostic": "User photo confirms AQC13 DHCP 10.10.10.21 and HTTP boot.ipxe download; original test binary only.",
+                           "forge_handoff": "Not yet confirmed", "keyboard": "Unresolved", "offline_rebuild": "Not yet tested", "daedalus_01_regression": "Not yet tested"},
+            "provenance": "Existing artifacts are evidence. Canonical source and debs must be acquired upstream by acquire."
+        })
+        shutil.copy2(Path(__file__), work / "capture/recipe/ipxe-artifacts")
+        seal(work / "capture")
+        os.rename(work, dest)
+    except BaseException:
+        shutil.rmtree(work)
+        raise
+    print(f"Captured evidence and {len(packages)} exact ARM64/all package records: {dest}")
+    print("Canonical packages/source have not yet been acquired. Run acquire next.")
+
+
+def load_snapshot(snapshot, acquired=False):
+    snapshot = Path(snapshot).resolve()
+    verify(snapshot / "capture")
+    data = json.loads((snapshot / "capture/capture.json").read_text())
+    if data["commit"] != COMMIT or data["upstream"] != UPSTREAM:
+        fail("Unsupported source identity")
+    if acquired:
+        verify(snapshot / "acquired")
+        meta = json.loads((snapshot / "acquired/acquisition.json").read_text())
+        if meta["capture_manifest_sha256"] != sha(snapshot / "capture/checksums.json"):
+            fail("Acquisition belongs to a different capture")
+    return snapshot, data
+
+
+def download_package(row, target, indexes):
+    """A missing live URL may fall back only to identical signed snapshot data."""
+    selected = dict(row)
+    tried = []
+    while True:
+        url = selected["uri"]
+        if urllib.parse.urlparse(url).hostname not in OFFICIAL:
+            fail("Noncanonical package URI: " + url)
+        tried.append(url)
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response, Path(target).open("wb") as stream:
+                if urllib.parse.urlparse(response.geturl()).hostname not in OFFICIAL:
+                    fail("Package redirected outside official Ubuntu hosts")
+                shutil.copyfileobj(response, stream)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (404, 410) or len(tried) != 1:
+                fail(f"Download failed for {package_key(row)}={row['version']} at {url}: {exc}")
+            print(f"URL unavailable ({exc.code}); looking up the exact package in saved snapshot indexes.", flush=True)
+            identity = {k: row[k] for k in ("name", "architecture", "version")}
+            replacement = recover_metadata([identity], indexes)[0]
+            if replacement["sha256"] != row["sha256"] or replacement["size"] != row["size"]:
+                fail("Snapshot package differs from the captured SHA256/size: " + package_key(row))
+            if replacement["uri"] in tried:
+                fail("Snapshot lookup returned the same unavailable URL: " + url)
+            selected = replacement
+            print("Using snapshot " + replacement.get("snapshot_date", "") + " for " + package_key(row), flush=True)
+    if Path(target).stat().st_size != row["size"] or sha(target) != row["sha256"]:
+        fail("Upstream package checksum/size mismatch: " + row["name"])
+    return {**selected, "captured_uri": row["uri"], "attempted_uris": tried}
+
+
+def acquisition_indexes(snap):
+    """Reuse only original index directories identical to the sealed capture."""
+    indexes = []
+    base = snap / "capture/evidence/snapshot-indexes"
+    if not base.exists():
+        return indexes
+    for evidence in sorted(base.iterdir(), reverse=True):
+        info = json.loads((evidence / "index.json").read_text())
+        root = Path(info["location"])
+        if not (root / "evidence/checksums.json").is_file():
+            continue
+        if sha(root / "evidence/checksums.json") != sha(evidence / "checksums.json"):
+            fail("Historical index differs from the captured index: " + str(root))
+        indexes.append(root)
+    return indexes
+
+
+def acquire(args):
+    snap, data = load_snapshot(args.snapshot)
+    dest = snap / "acquired"
+    if dest.exists():
+        load_snapshot(snap, acquired=True)
+        print("Existing canonical acquisition verified; no changes.")
+        return
+    work = Path(tempfile.mkdtemp(prefix="acquired.partial-", dir=snap))
+    try:
+        source = work / "upstream"
+        source.mkdir()
+        with tempfile.TemporaryDirectory(prefix="ipxe-upstream-") as temp:
+            git = Path(temp) / "source"
+            run(["git", "init", git], stdout=subprocess.DEVNULL)
+            run(["git", "-C", git, "remote", "add", "origin", UPSTREAM])
+            run(["git", "-C", git, "fetch", "--depth=1", "origin", COMMIT])
+            if output(["git", "-C", git, "rev-parse", "FETCH_HEAD"]) != COMMIT:
+                fail("Upstream commit mismatch")
+            run(["git", "-C", git, "archive", "--format=tar.gz", "--output", source / "ipxe-source.tar.gz", COMMIT])
+        # Compare canonical upstream content to the original clean-source evidence.
+        def uncompressed_digest(p):
+            h = hashlib.sha256()
+            with gzip.open(p, "rb") as f:
+                for block in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(block)
+            return h.hexdigest()
+        if uncompressed_digest(source / "ipxe-source.tar.gz") != uncompressed_digest(snap / "capture/evidence/source-original.tar.gz"):
+            fail("Fresh upstream source archive differs from the tested clean-source archive")
+        repo = work / "apt"
+        pool = repo / "pool"
+        pool.mkdir(parents=True)
+        records = []
+        indexes = acquisition_indexes(snap)
+        for row in data["packages"]:
+            target = pool / (row["sha256"] + ".deb")
+            print(f"Acquire {package_key(row)}={row['version']}", flush=True)
+            downloaded = download_package(row, target, indexes)
+            identity = output(["dpkg-deb", "-f", target, "Package", "Version", "Architecture"])
+            fields = dict(line.split(": ", 1) for line in identity.splitlines())
+            if fields != {"Package": row["name"], "Version": row["version"], "Architecture": row["architecture"]}:
+                fail("Package control identity mismatch: " + str(target))
+            records.append({**downloaded, "filename": "apt/pool/" + target.name})
+        with (repo / "Packages").open("wb") as stream:
+            run(["dpkg-scanpackages", "--multiversion", "pool", "/dev/null"], cwd=repo, stdout=stream)
+        with (repo / "Packages").open("rb") as stream, (repo / "Packages.gz").open("wb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as compressed:
+                shutil.copyfileobj(stream, compressed)
+        (repo / "Release").write_text("Origin: Graystone\nLabel: Pinned iPXE build dependencies\nArchitectures: arm64 all\nDescription: Locally checksummed official Ubuntu packages\nSHA256:\n" + "".join(
+            f" {sha(repo / n)} {str((repo / n).stat().st_size).rjust(16)} {n}\n" for n in ("Packages", "Packages.gz")))
+        shutil.copy2(Path(__file__), work / "acquisition-script.py")
+        write_json(work / "acquisition.json", {"schema": 1, "acquired_at": now(), "upstream": UPSTREAM,
+                   "commit": COMMIT, "capture_manifest_sha256": sha(snap / "capture/checksums.json"), "packages": records})
+        seal(work)
+        os.rename(work, dest)
+    except BaseException:
+        shutil.rmtree(work)
+        raise
+    print(f"Canonical source and local APT repository acquired: {dest}")
+
+
+def dependencies(args):
+    require_noble_arm()
+    offline()
+    snap, data = load_snapshot(args.snapshot, acquired=True)
+    if args.apply and os.geteuid() != 0:
+        fail("Installing packages requires root inside the isolated network namespace")
+    repo = snap / "acquired/apt"
+    if any(c.isspace() for c in str(repo)):
+        fail("APT repository path must not contain whitespace")
+    with tempfile.TemporaryDirectory(prefix="ipxe-offline-apt-") as temp:
+        t = Path(temp)
+        (t / "lists/partial").mkdir(parents=True)
+        (t / "archives/partial").mkdir(parents=True)
+        (t / "sources.list").write_text(f"deb [trusted=yes] {repo.as_uri()} ./\n")
+        base = ["apt-get", "-o", f"Dir::Etc::sourcelist={t / 'sources.list'}", "-o", "Dir::Etc::sourceparts=-",
+                "-o", f"Dir::State::lists={t / 'lists'}", "-o", f"Dir::Cache::archives={t / 'archives'}",
+                "-o", "Acquire::Languages=none", "-o", "APT::Get::List-Cleanup=0"]
+        run(base + ["update"])
+        specs = [package_key(r) + "=" + r["version"] for r in data["packages"]]
+        # Never remove packages or silently authorize downgrades on the controller.
+        flags = ["--no-install-recommends", "--no-remove"]
+        run(base + flags + ["--simulate", "install"] + specs)
+        if args.apply:
+            run(base + flags + ["--assume-yes", "install"] + specs)
+        else:
+            print("Simulation only. Use dependencies --apply to install this exact closure.")
+
+
+def check_installed(rows):
+    errors = []
+    for row in rows:
+        result = subprocess.run(["dpkg-query", "-W", "-f=${Status}\t${Version}\t${Architecture}", package_key(row)],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        want = "install ok installed\t" + row["version"] + "\t" + row["architecture"]
+        if result.returncode or result.stdout != want:
+            errors.append(package_key(row) + "=" + row["version"])
+    if errors:
+        fail("Installed dependency versions differ from capture: " + ", ".join(errors) + ". Run dependencies simulation; do not downgrade the controller blindly.")
+
+
+def extract_source(archive, dest):
+    with tarfile.open(archive, "r:gz") as tar:
+        # iPXE upstream may use symlinks; Python's data filter rejects escapes,
+        # absolute links and special files while preserving safe source links.
+        tar.extractall(dest, filter="data")
+
+
+def build(args):
+    require_noble_arm()
+    offline()
+    snap, data = load_snapshot(args.snapshot, acquired=True)
+    check_installed(data["packages"])
+    dest = Path(args.output).resolve()
+    if dest.exists():
+        fail(f"Build output already exists: {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=dest.name + ".partial-", dir=dest.parent))
+    try:
+        src = work / "source"
+        src.mkdir()
+        extract_source(snap / "acquired/upstream/ipxe-source.tar.gz", src)
+        recipe = snap / "capture/recipe"
+        # Preserve the tested patch even though it changes the snponly target's
+        # driver selection, not the full ipxe target's native Aquantia driver.
+        run(["patch", "--batch", "--forward", "-p1", "-i", recipe / "source.patch"], cwd=src)
+        shutil.copytree(recipe / "local", src / "src/config/local", dirs_exist_ok=True)
+        env = {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C",
+               "SOURCE_DATE_EPOCH": str(data["commit_epoch"]),
+               "GIT_CEILING_DIRECTORIES": str(src),
+               "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
+        for variant, script in (("diagnostic", "native-auto.ipxe"), ("forge", "native-forge.ipxe")):
+            shutil.copy2(recipe / script, work / script)
+            argv = ["make", "-C", src / "src", f"-j{args.jobs}", "CROSS=x86_64-linux-gnu-",
+                    data["target"], f"EMBED={work / script}"]
+            print(f"Building {variant} offline...", flush=True)
+            with (work / (variant + ".log")).open("wb") as log:
+                result = subprocess.run([str(x) for x in argv], env=env, stdout=log, stderr=subprocess.STDOUT)
+            if result.returncode:
+                print((work / (variant + ".log")).read_text(errors="replace")[-8000:], file=sys.stderr)
+                fail(f"{variant} build failed")
+            binary = work / ("ipxe-native-" + variant + ".efi")
+            shutil.copy2(src / "src" / data["target"], binary)
+            if not efi_x64(binary):
+                fail("Output is not an x86-64 EFI application")
+        shutil.rmtree(src)
+        write_json(work / "build.json", {"schema": 1, "built_at": now(), "commit": COMMIT,
+                   "capture_manifest_sha256": sha(snap / "capture/checksums.json"),
+                   "acquisition_manifest_sha256": sha(snap / "acquired/checksums.json"),
+                   "network": "No interfaces other than loopback in build namespace",
+                   "source_date_epoch": data["commit_epoch"], "jobs": args.jobs,
+                   "hardware_validation": "Pending for these newly built binaries",
+                   "note": "Source archive has no .git metadata. Functional reproducibility is tested; byte identity to historical builds is not asserted."})
+        seal(work)
+        os.rename(work, dest)
+    except BaseException:
+        # Keep logs/source in a clearly incomplete directory for diagnosis.
+        print(f"Incomplete build retained: {work}", file=sys.stderr)
+        raise
+    print(f"Offline build complete and sealed: {dest}")
+
+
+def efi_x64(path):
+    import struct
+    data = Path(path).read_bytes()
+    if len(data) < 64 or data[:2] != b"MZ":
+        return False
+    p = struct.unpack_from("<I", data, 60)[0]
+    return (p + 94 <= len(data) and data[p:p + 4] == b"PE\0\0" and
+            struct.unpack_from("<H", data, p + 4)[0] == 0x8664 and
+            struct.unpack_from("<H", data, p + 24)[0] == 0x20b and
+            struct.unpack_from("<H", data, p + 92)[0] == 10)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    sub = p.add_subparsers(dest="command", required=True)
+    c = sub.add_parser("capture", help="Capture evidence and exact installed ARM64 dependency metadata")
+    c.add_argument("--evidence", required=True)
+    c.add_argument("--snapshot", required=True)
+    c.add_argument("--snapshot-index", action="append", default=[], help="Private historical index directory; repeat for multiple dates")
+    c.set_defaults(func=capture)
+    c = sub.add_parser("snapshot-index", help="Download historical signed ARM64 indexes into a private directory")
+    c.add_argument("--date", required=True)
+    c.add_argument("--output", required=True)
+    c.set_defaults(func=snapshot_index)
+    c = sub.add_parser("_read-snapshot-records", help=argparse.SUPPRESS)
+    c.set_defaults(func=read_snapshot_records)
+    for name, func in (("acquire", acquire), ("dependencies", dependencies), ("build", build), ("verify", None)):
+        c = sub.add_parser(name)
+        c.add_argument("--snapshot", required=True)
+        c.set_defaults(func=func)
+        if name == "dependencies":
+            c.add_argument("--apply", action="store_true")
+        if name == "build":
+            c.add_argument("--output", required=True)
+            c.add_argument("--jobs", type=int, default=4, choices=range(1, 65))
+    args = p.parse_args()
+    if args.command == "verify":
+        s, _ = load_snapshot(args.snapshot, acquired=True)
+        print(f"Capture and canonical acquisition verified: {s}")
+    else:
+        args.func(args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, OSError, subprocess.CalledProcessError, ValueError, KeyError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)

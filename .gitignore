@@ -26,3 +26,6 @@ __pycache__/
 
 # Ansible local state
 *.retry
+
+# Local credentials — never commit
+/secrets/
