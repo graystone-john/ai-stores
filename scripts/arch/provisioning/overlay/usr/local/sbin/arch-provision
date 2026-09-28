@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=================================================="
+echo "Arch automatic provisioning"
+echo "=================================================="
+
+cmdline="$(cat /proc/cmdline)"
+
+getarg() {
+    local name="$1"
+    local token
+
+    for token in $cmdline; do
+        case "$token" in
+            "${name}="*)
+                printf '%s\n' "${token#*=}"
+                return 0
+                ;;
+        esac
+    done
+
+    return 1
+}
+
+SPEC_URL="$(getarg provision.spec || true)"
+INSTALLER_URL="$(getarg provision.installer || true)"
+HELPER_URL="$(getarg provision.helper || true)"
+
+if [[ -z "$SPEC_URL" ]]; then
+    echo "ERROR: provision.spec was not supplied." >&2
+    exit 1
+fi
+
+if [[ -z "$INSTALLER_URL" ]]; then
+    echo "ERROR: provision.installer was not supplied." >&2
+    exit 1
+fi
+
+if [[ -z "$HELPER_URL" ]]; then
+    echo "ERROR: provision.helper was not supplied." >&2
+    exit 1
+fi
+
+WORK="/run/arch-provision"
+mkdir -p "$WORK"
+cd "$WORK"
+
+echo "Downloading provisioning payload..."
+
+curl -fsS -o install.yaml "$SPEC_URL"
+curl -fsS -o install-arch "$INSTALLER_URL"
+curl -fsS -o disk_resolver.py "$HELPER_URL"
+
+chmod 0755 install-arch
+chmod 0644 install.yaml disk_resolver.py
+
+echo "Starting Arch installation..."
+
+exec ./install-arch install.yaml --execute

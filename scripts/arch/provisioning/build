@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OVERLAY="$SOURCE/overlay"
+
+RELENG="/usr/share/archiso/configs/releng"
+
+WORK_ROOT="${ARCHISO_WORK_ROOT:-/tmp/ai-forge-archiso}"
+PROFILE="$WORK_ROOT/profile"
+WORK="$WORK_ROOT/work"
+OUT="${ARCHISO_OUT:-$WORK_ROOT/out}"
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+echo "=== Arch provisioning image build ==="
+
+[[ "$(uname -m)" == "x86_64" ]] ||
+    die "This build requires an x86_64 host."
+
+[[ -f /etc/arch-release ]] ||
+    die "This build requires Arch Linux."
+
+command -v mkarchiso >/dev/null ||
+    die "mkarchiso is required. Install package: archiso"
+
+[[ -d "$RELENG" ]] ||
+    die "Official Arch releng profile not found: $RELENG"
+
+[[ -x "$OVERLAY/usr/local/sbin/arch-provision" ]] ||
+    die "Missing executable arch-provision launcher."
+
+[[ -f "$OVERLAY/etc/systemd/system/arch-provision.service" ]] ||
+    die "Missing arch-provision.service."
+
+echo "Builder:      $(cat /etc/hostname 2>/dev/null || echo unknown)"
+echo "Architecture: $(uname -m)"
+echo "Archiso:      $(pacman -Q archiso)"
+echo
+
+echo "Preparing clean profile..."
+rm -rf "$WORK_ROOT"
+mkdir -p "$PROFILE" "$OUT"
+
+cp -a "$RELENG/." "$PROFILE/"
+cp -a "$OVERLAY/." "$PROFILE/airootfs/"
+
+#
+# Declare permissions through Archiso rather than relying on source
+# filesystem ownership/mode.
+#
+python3 - "$PROFILE/profiledef.sh" <<'PY'
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1])
+text = p.read_text()
+
+needle = '''file_permissions=(
+'''
+
+addition = '''file_permissions=(
+  ["/usr/local/sbin/arch-provision"]="0:0:755"
+'''
+
+if '["/usr/local/sbin/arch-provision"]' not in text:
+    if needle not in text:
+        raise SystemExit("file_permissions array not found")
+    text = text.replace(needle, addition, 1)
+    p.write_text(text)
+PY
+
+echo "Validating customization..."
+
+grep -Fq \
+  '["/usr/local/sbin/arch-provision"]="0:0:755"' \
+  "$PROFILE/profiledef.sh"
+
+test -x "$PROFILE/airootfs/usr/local/sbin/arch-provision"
+test -f "$PROFILE/airootfs/etc/systemd/system/arch-provision.service"
+test -L \
+  "$PROFILE/airootfs/etc/systemd/system/multi-user.target.wants/arch-provision.service"
+
+echo "Building Arch provisioning ISO..."
+
+mkarchiso \
+    -v \
+    -w "$WORK" \
+    -o "$OUT" \
+    "$PROFILE"
+
+ISO="$(find "$OUT" -maxdepth 1 -type f -name '*.iso' -print -quit)"
+
+[[ -n "$ISO" ]] ||
+    die "mkarchiso completed but no ISO was produced."
+
+(
+    cd "$OUT"
+    sha256sum "$(basename "$ISO")" > SHA256SUMS
+)
+
+echo
+echo "=== BUILD COMPLETE ==="
+ls -lh "$ISO" "$OUT/SHA256SUMS"
+echo
+echo "Output:"
+echo "$OUT"
