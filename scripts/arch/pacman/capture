@@ -46,9 +46,12 @@ echo
 
 rm -rf "$OUT"
 
+WORK="$(mktemp -d /tmp/graystone-arch-pacman.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+
 mkdir -p \
-    "$OUT/root" \
-    "$OUT/db" \
+    "$WORK/root" \
+    "$WORK/db" \
     "$OUT/packages" \
     "$OUT/databases" \
     "$OUT/manifest"
@@ -59,8 +62,8 @@ cp "$PACKAGE_LIST" \
 echo "=== RESOLVING EMPTY TARGET ==="
 
 pacman \
-    --root "$OUT/root" \
-    --dbpath "$OUT/db" \
+    --root "$WORK/root" \
+    --dbpath "$WORK/db" \
     --cachedir "$OUT/packages" \
     --noconfirm \
     --needed \
@@ -70,7 +73,7 @@ pacman \
 echo
 echo "=== PRESERVING ARCH DATABASES ==="
 
-cp -a "$OUT/db/sync/." "$OUT/databases/"
+cp -a "$WORK/db/sync/." "$OUT/databases/"
 
 echo
 echo "=== PACKAGE INVENTORY ==="
