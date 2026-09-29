@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo "Usage: $0 <snapshot> [output-directory]" >&2
+    echo "Example: $0 2026.09.28" >&2
+    exit 2
+fi
+
+SNAPSHOT="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACKAGE_LIST="$SCRIPT_DIR/packages.txt"
+OUT="${2:-/run/archiso/httpspace/graystone-arch-pacman}"
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+[[ "$(uname -m)" == "x86_64" ]] ||
+    die "Capture requires x86_64."
+
+[[ -f /etc/arch-release ]] ||
+    die "Capture requires Arch Linux."
+
+command -v pacman >/dev/null ||
+    die "pacman is required."
+
+[[ -s "$PACKAGE_LIST" ]] ||
+    die "Missing package manifest: $PACKAGE_LIST"
+
+mapfile -t PACKAGES < <(
+    grep -Ev '^[[:space:]]*(#|$)' "$PACKAGE_LIST"
+)
+
+[[ ${#PACKAGES[@]} -gt 0 ]] ||
+    die "Package manifest is empty."
+
+echo "=== Graystone Arch pacman capture ==="
+echo "Snapshot: $SNAPSHOT"
+echo "Output:   $OUT"
+echo
+echo "Requested packages:"
+printf '  %s\n' "${PACKAGES[@]}"
+echo
+
+rm -rf "$OUT"
+
+mkdir -p \
+    "$OUT/root" \
+    "$OUT/db" \
+    "$OUT/packages" \
+    "$OUT/databases" \
+    "$OUT/manifest"
+
+cp "$PACKAGE_LIST" \
+    "$OUT/manifest/requested-packages.txt"
+
+echo "=== RESOLVING EMPTY TARGET ==="
+
+pacman \
+    --root "$OUT/root" \
+    --dbpath "$OUT/db" \
+    --cachedir "$OUT/packages" \
+    --noconfirm \
+    --needed \
+    -Syw \
+    "${PACKAGES[@]}"
+
+echo
+echo "=== PRESERVING ARCH DATABASES ==="
+
+cp -a "$OUT/db/sync/." "$OUT/databases/"
+
+echo
+echo "=== PACKAGE INVENTORY ==="
+
+find "$OUT/packages" \
+    -maxdepth 1 -type f -name '*.pkg.tar.zst' \
+    -printf '%f\n' |
+    sort > "$OUT/manifest/package-files.txt"
+
+find "$OUT/packages" \
+    -maxdepth 1 -type f -name '*.pkg.tar.zst.sig' \
+    -printf '%f\n' |
+    sort > "$OUT/manifest/signature-files.txt"
+
+PACKAGE_COUNT="$(wc -l < "$OUT/manifest/package-files.txt")"
+SIGNATURE_COUNT="$(wc -l < "$OUT/manifest/signature-files.txt")"
+
+[[ "$PACKAGE_COUNT" -gt 0 ]] ||
+    die "No packages captured."
+
+[[ "$PACKAGE_COUNT" -eq "$SIGNATURE_COUNT" ]] ||
+    die "Package/signature count mismatch: $PACKAGE_COUNT/$SIGNATURE_COUNT"
+
+echo
+echo "=== RESOLVED DEPENDENCY CLOSURE ==="
+
+{
+    printf 'repository\tname\tversion\tarchitecture\tfilename\n'
+
+    for pkg in "$OUT"/packages/*.pkg.tar.zst; do
+        query="$(pacman -Qp "$pkg")"
+        name="${query%% *}"
+        version="${query#* }"
+
+        arch="$(
+            pacman -Qip "$pkg" |
+            awk -F ': ' '/^Architecture/ {print $2; exit}'
+        )"
+
+        repo="unknown"
+
+        if pacman -Sl core 2>/dev/null |
+            awk '{print $2}' |
+            grep -Fxq "$name"
+        then
+            repo="core"
+        elif pacman -Sl extra 2>/dev/null |
+            awk '{print $2}' |
+            grep -Fxq "$name"
+        then
+            repo="extra"
+        fi
+
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+            "$repo" \
+            "$name" \
+            "$version" \
+            "$arch" \
+            "$(basename "$pkg")"
+    done
+} > "$OUT/manifest/resolved-packages.unsorted.tsv"
+
+{
+    head -1 "$OUT/manifest/resolved-packages.unsorted.tsv"
+
+    tail -n +2 "$OUT/manifest/resolved-packages.unsorted.tsv" |
+        sort -t $'\t' -k2,2
+} > "$OUT/manifest/resolved-packages.tsv"
+
+rm "$OUT/manifest/resolved-packages.unsorted.tsv"
+
+RESOLVED_COUNT="$(
+    tail -n +2 "$OUT/manifest/resolved-packages.tsv" |
+    wc -l
+)"
+
+[[ "$RESOLVED_COUNT" -eq "$PACKAGE_COUNT" ]] ||
+    die "Resolved manifest count differs from package count."
+
+if awk -F '\t' \
+    'NR > 1 && $1 == "unknown" { found=1 } END { exit !found }' \
+    "$OUT/manifest/resolved-packages.tsv"
+then
+    echo "Packages with unknown repository:" >&2
+    awk -F '\t' \
+        'NR > 1 && $1 == "unknown"' \
+        "$OUT/manifest/resolved-packages.tsv" >&2
+    die "Repository provenance is incomplete."
+fi
+
+cat > "$OUT/manifest/capture.txt" <<META
+distribution=arch
+snapshot=$SNAPSHOT
+storage_architecture=amd64
+native_architecture=x86_64
+requested_package_count=${#PACKAGES[@]}
+resolved_package_count=$RESOLVED_COUNT
+package_count=$PACKAGE_COUNT
+signature_count=$SIGNATURE_COUNT
+repositories=core extra
+META
+
+echo
+echo "=== CHECKSUMS ==="
+
+(
+    cd "$OUT"
+
+    find packages databases manifest \
+        -type f \
+        -print0 |
+        sort -z |
+        xargs -0 sha256sum > SHA256SUMS
+)
+
+echo
+echo "=== CAPTURE COMPLETE ==="
+echo "Packages:          $PACKAGE_COUNT"
+echo "Signatures:        $SIGNATURE_COUNT"
+echo "Resolved packages: $RESOLVED_COUNT"
+echo "Package size:      $(du -sh "$OUT/packages" | awk '{print $1}')"
+
+echo
+echo "Repository closure:"
+awk -F '\t' '
+    NR > 1 { count[$1]++ }
+    END {
+        for (repo in count)
+            print "  " repo ": " count[repo]
+    }
+' "$OUT/manifest/resolved-packages.tsv" |
+sort
+
+echo
+echo "Output:"
+echo "  $OUT"
