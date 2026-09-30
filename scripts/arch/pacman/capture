@@ -12,13 +12,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_LIST="$SCRIPT_DIR/packages.txt"
 OUT="${2:-/run/archiso/httpspace/graystone-arch-pacman}"
 
+NATIVE_ARCH="x86_64"
+REPOSITORIES=(core extra)
+
 die() {
     echo "ERROR: $*" >&2
     exit 1
 }
 
-[[ "$(uname -m)" == "x86_64" ]] ||
-    die "Capture requires x86_64."
+[[ "$(uname -m)" == "$NATIVE_ARCH" ]] ||
+    die "Capture requires $NATIVE_ARCH."
 
 [[ -f /etc/arch-release ]] ||
     die "Capture requires Arch Linux."
@@ -36,9 +39,10 @@ mapfile -t PACKAGES < <(
 [[ ${#PACKAGES[@]} -gt 0 ]] ||
     die "Package manifest is empty."
 
-echo "=== Graystone Arch pacman capture ==="
-echo "Snapshot: $SNAPSHOT"
-echo "Output:   $OUT"
+echo "=== Graystone Arch pacman sparse mirror capture ==="
+echo "Snapshot:     $SNAPSHOT"
+echo "Architecture: $NATIVE_ARCH"
+echo "Output:       $OUT"
 echo
 echo "Requested packages:"
 printf '  %s\n' "${PACKAGES[@]}"
@@ -49,12 +53,27 @@ rm -rf "$OUT"
 WORK="$(mktemp -d /tmp/graystone-arch-pacman.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
+CACHE="$WORK/cache"
+
 mkdir -p \
     "$WORK/root" \
     "$WORK/db" \
-    "$OUT/packages" \
-    "$OUT/databases" \
+    "$CACHE" \
     "$OUT/manifest"
+
+#
+# Arch pacman downloads as DownloadUser=alpm by default.
+# Allow that unprivileged account to traverse the temporary workspace
+# and write only to pacman's database and package-download locations.
+#
+if getent passwd alpm >/dev/null 2>&1; then
+    chmod 0755 "$WORK"
+    chown -R alpm:alpm "$WORK/db" "$CACHE"
+fi
+
+for repo in "${REPOSITORIES[@]}"; do
+    mkdir -p "$OUT/$repo/os/$NATIVE_ARCH"
+done
 
 cp "$PACKAGE_LIST" \
     "$OUT/manifest/requested-packages.txt"
@@ -64,38 +83,46 @@ echo "=== RESOLVING EMPTY TARGET ==="
 pacman \
     --root "$WORK/root" \
     --dbpath "$WORK/db" \
-    --cachedir "$OUT/packages" \
+    --cachedir "$CACHE" \
     --noconfirm \
     --needed \
+    --quiet \
     -Syw \
     "${PACKAGES[@]}"
 
 echo
-echo "=== PRESERVING ARCH DATABASES ==="
+echo "=== PRESERVING OFFICIAL REPOSITORY DATABASES ==="
 
-cp -a "$WORK/db/sync/." "$OUT/databases/"
+for repo in "${REPOSITORIES[@]}"; do
+    db="$WORK/db/sync/$repo.db"
+
+    [[ -f "$db" ]] ||
+        die "Official repository database missing: $repo.db"
+
+    cp -a \
+        "$db" \
+        "$OUT/$repo/os/$NATIVE_ARCH/$repo.db"
+done
 
 echo
-echo "=== PACKAGE INVENTORY ==="
+echo "=== INDEXING OFFICIAL REPOSITORY DATABASES ==="
 
-find "$OUT/packages" \
-    -maxdepth 1 -type f -name '*.pkg.tar.zst' \
-    -printf '%f\n' |
-    sort > "$OUT/manifest/package-files.txt"
+for repo in "${REPOSITORIES[@]}"; do
+    db="$WORK/db/sync/$repo.db"
+    names="$WORK/$repo-package-names.txt"
 
-find "$OUT/packages" \
-    -maxdepth 1 -type f -name '*.pkg.tar.zst.sig' \
-    -printf '%f\n' |
-    sort > "$OUT/manifest/signature-files.txt"
+    tar -xOf "$db" --wildcards '*/desc' 2>/dev/null |
+        awk '
+            $0 == "%NAME%" {
+                getline
+                print
+            }
+        ' |
+        sort -u > "$names"
 
-PACKAGE_COUNT="$(wc -l < "$OUT/manifest/package-files.txt")"
-SIGNATURE_COUNT="$(wc -l < "$OUT/manifest/signature-files.txt")"
-
-[[ "$PACKAGE_COUNT" -gt 0 ]] ||
-    die "No packages captured."
-
-[[ "$PACKAGE_COUNT" -eq "$SIGNATURE_COUNT" ]] ||
-    die "Package/signature count mismatch: $PACKAGE_COUNT/$SIGNATURE_COUNT"
+    [[ -s "$names" ]] ||
+        die "Could not index package names from $repo.db"
+done
 
 echo
 echo "=== RESOLVED DEPENDENCY CLOSURE ==="
@@ -103,27 +130,21 @@ echo "=== RESOLVED DEPENDENCY CLOSURE ==="
 {
     printf 'repository\tname\tversion\tarchitecture\tfilename\n'
 
-    for pkg in "$OUT"/packages/*.pkg.tar.zst; do
-        query="$(pacman -Qp "$pkg")"
+    for pkg in "$CACHE"/*.pkg.tar.zst; do
+        query="$(pacman --config /dev/null -Qp "$pkg")"
         name="${query%% *}"
         version="${query#* }"
 
         arch="$(
-            pacman -Qip "$pkg" |
+            pacman --config /dev/null -Qip "$pkg" |
             awk -F ': ' '/^Architecture/ {print $2; exit}'
         )"
 
         repo="unknown"
 
-        if pacman -Sl core 2>/dev/null |
-            awk '{print $2}' |
-            grep -Fxq "$name"
-        then
+        if grep -Fxq "$name" "$WORK/core-package-names.txt"; then
             repo="core"
-        elif pacman -Sl extra 2>/dev/null |
-            awk '{print $2}' |
-            grep -Fxq "$name"
-        then
+        elif grep -Fxq "$name" "$WORK/extra-package-names.txt"; then
             repo="extra"
         fi
 
@@ -150,8 +171,8 @@ RESOLVED_COUNT="$(
     wc -l
 )"
 
-[[ "$RESOLVED_COUNT" -eq "$PACKAGE_COUNT" ]] ||
-    die "Resolved manifest count differs from package count."
+[[ "$RESOLVED_COUNT" -gt 0 ]] ||
+    die "No packages resolved."
 
 if awk -F '\t' \
     'NR > 1 && $1 == "unknown" { found=1 } END { exit !found }' \
@@ -164,16 +185,82 @@ then
     die "Repository provenance is incomplete."
 fi
 
+echo
+echo "=== POPULATING SPARSE MIRROR ==="
+
+while IFS=$'\t' read -r repo name version arch filename; do
+    [[ "$repo" == "repository" ]] && continue
+
+    src="$CACHE/$filename"
+    sig="$src.sig"
+    dest="$OUT/$repo/os/$NATIVE_ARCH"
+
+    [[ -f "$src" ]] ||
+        die "Captured package missing: $filename"
+
+    [[ -f "$sig" ]] ||
+        die "Captured signature missing: $filename.sig"
+
+    cp -a "$src" "$dest/$filename"
+    cp -a "$sig" "$dest/$filename.sig"
+
+done < "$OUT/manifest/resolved-packages.tsv"
+
+echo
+echo "=== PACKAGE INVENTORY ==="
+
+find "$OUT/core/os/$NATIVE_ARCH" \
+     "$OUT/extra/os/$NATIVE_ARCH" \
+    -maxdepth 1 \
+    -type f \
+    -name '*.pkg.tar.zst' \
+    -printf '%P\n' |
+    sort > "$OUT/manifest/package-files.txt"
+
+find "$OUT/core/os/$NATIVE_ARCH" \
+     "$OUT/extra/os/$NATIVE_ARCH" \
+    -maxdepth 1 \
+    -type f \
+    -name '*.pkg.tar.zst.sig' \
+    -printf '%P\n' |
+    sort > "$OUT/manifest/signature-files.txt"
+
+PACKAGE_COUNT="$(
+    find "$OUT/core/os/$NATIVE_ARCH" \
+         "$OUT/extra/os/$NATIVE_ARCH" \
+        -maxdepth 1 \
+        -type f \
+        -name '*.pkg.tar.zst' |
+        wc -l
+)"
+
+SIGNATURE_COUNT="$(
+    find "$OUT/core/os/$NATIVE_ARCH" \
+         "$OUT/extra/os/$NATIVE_ARCH" \
+        -maxdepth 1 \
+        -type f \
+        -name '*.pkg.tar.zst.sig' |
+        wc -l
+)"
+
+[[ "$PACKAGE_COUNT" -eq "$RESOLVED_COUNT" ]] ||
+    die "Package count differs from resolved closure."
+
+[[ "$PACKAGE_COUNT" -eq "$SIGNATURE_COUNT" ]] ||
+    die "Package/signature count mismatch: $PACKAGE_COUNT/$SIGNATURE_COUNT"
+
 cat > "$OUT/manifest/capture.txt" <<META
 distribution=arch
 snapshot=$SNAPSHOT
-storage_architecture=amd64
-native_architecture=x86_64
+native_architecture=$NATIVE_ARCH
 requested_package_count=${#PACKAGES[@]}
 resolved_package_count=$RESOLVED_COUNT
 package_count=$PACKAGE_COUNT
 signature_count=$SIGNATURE_COUNT
 repositories=core extra
+repository_layout=\$repo/os/\$arch
+repository_databases=official
+mirror_scope=sparse
 META
 
 echo
@@ -182,11 +269,20 @@ echo "=== CHECKSUMS ==="
 (
     cd "$OUT"
 
-    find packages databases manifest \
+    find core extra manifest \
         -type f \
+        ! -path 'manifest/SHA256SUMS' \
         -print0 |
         sort -z |
-        xargs -0 sha256sum > SHA256SUMS
+        xargs -0 sha256sum > manifest/SHA256SUMS
+)
+
+echo
+echo "=== VERIFY CHECKSUMS ==="
+
+(
+    cd "$OUT"
+    sha256sum -c manifest/SHA256SUMS --quiet
 )
 
 echo
@@ -194,7 +290,6 @@ echo "=== CAPTURE COMPLETE ==="
 echo "Packages:          $PACKAGE_COUNT"
 echo "Signatures:        $SIGNATURE_COUNT"
 echo "Resolved packages: $RESOLVED_COUNT"
-echo "Package size:      $(du -sh "$OUT/packages" | awk '{print $1}')"
 
 echo
 echo "Repository closure:"
@@ -206,6 +301,14 @@ awk -F '\t' '
     }
 ' "$OUT/manifest/resolved-packages.tsv" |
 sort
+
+echo
+echo "Repository sizes:"
+for repo in "${REPOSITORIES[@]}"; do
+    printf "  %-6s " "$repo:"
+    du -sh "$OUT/$repo/os/$NATIVE_ARCH" |
+        awk '{print $1}'
+done
 
 echo
 echo "Output:"
