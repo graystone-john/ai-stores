@@ -1,0 +1,6 @@
+cuda
+cmake
+gcc
+make
+git
+gzip
