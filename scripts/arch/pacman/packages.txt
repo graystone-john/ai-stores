@@ -6,3 +6,8 @@ openssh
 sudo
 efibootmgr
 python
+iwd
+nvidia-open
+git
+curl
+rsync
