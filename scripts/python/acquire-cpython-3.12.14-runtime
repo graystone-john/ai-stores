@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="3.12.15"
-FILENAME="Python-${VERSION}.tar.xz"
-SHA256="c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a"
+VERSION="3.12.14"
+RELEASE="20260825"
+FILENAME="cpython-${VERSION}+${RELEASE}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+SHA256="7ce4a71285d913955a76053cc7605ea96da8ecada54dba9cf395245961816421"
 
-URL="https://www.python.org/ftp/python/${VERSION}/${FILENAME}"
+URL="https://github.com/astral-sh/python-build-standalone/releases/download/${RELEASE}/${FILENAME}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AI_STORES="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 
-DEST_DIR="$AI_STORES/vault/python/cpython/${VERSION}"
+DEST_DIR="$AI_STORES/vault/python/runtimes/astral/python-build-standalone/releases/${RELEASE}"
 DEST="$DEST_DIR/$FILENAME"
 TEMP="$DEST.tmp"
 
-for command in curl sha256sum; do
+for command in curl sha256sum tar; do
     command -v "$command" >/dev/null || {
         echo "ERROR: required command missing: $command" >&2
         exit 1
@@ -39,8 +40,9 @@ fi
 
 rm -f "$TEMP"
 
-echo "=== ACQUIRING OFFICIAL PYTHON ==="
-echo "Version: $VERSION"
+echo "=== ACQUIRING PREBUILT CPYTHON RUNTIME ==="
+echo "Python:  $VERSION"
+echo "Release: $RELEASE"
 echo "Source:  $URL"
 
 curl \
@@ -61,10 +63,14 @@ if [[ "$ACTUAL" != "$SHA256" ]]; then
     exit 1
 fi
 
+echo
+echo "=== VERIFY ARCHIVE ==="
+tar -tzf "$TEMP" >/dev/null
+
 mv "$TEMP" "$DEST"
 
 echo
 echo "=== ACQUISITION COMPLETE ==="
-echo "SHA256: $SHA256"
+sha256sum "$DEST"
 echo "Saved:"
 echo "  $DEST"
