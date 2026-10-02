@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ISO="${1:?Usage: acquire-wifi-from-iso /path/to/ubuntu-amd64.iso}"
+DEST="$ROOT/vault/linux/ubuntu/apt"
+
+[[ -f "$ISO" ]] || {
+    echo "ISO not found: $ISO" >&2
+    exit 1
+}
+
+MOUNT_DIR="$(mktemp -d)"
+cleanup() {
+    sudo umount "$MOUNT_DIR" && rmdir "$MOUNT_DIR"
+}
+sudo mount -o loop,ro "$ISO" "$MOUNT_DIR"
+trap cleanup EXIT
+
+for entry in \
+    "wpa:wpasupplicant" \
+    "pcsc-lite:libpcsclite1"
+do
+    source_name="${entry%%:*}"
+    package="${entry##*:}"
+    relative="pool/main/${source_name:0:1}/$source_name"
+
+    matches=("$MOUNT_DIR/$relative/${package}_"*"_amd64.deb")
+    [[ ${#matches[@]} -eq 1 && -f "${matches[0]}" ]] || {
+        echo "Expected one $package AMD64 package in ISO" >&2
+        exit 1
+    }
+
+    source="${matches[0]}"
+    [[ "$(dpkg-deb -f "$source" Package)" == "$package" ]]
+    [[ "$(dpkg-deb -f "$source" Architecture)" == "amd64" ]]
+
+    mkdir -p "$DEST/$relative"
+    target="$DEST/$relative/$(basename "$source")"
+
+    if [[ -e "$target" ]]; then
+        cmp "$source" "$target"
+    else
+        cp "$source" "$target"
+    fi
+
+    dpkg-deb -f "$target" Package Version Architecture
+    sha256sum "$target"
+done
