@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat >&2 <<USAGE
+Usage:
+  $0 --host <user@host> --identity <ssh-key>
+
+Example:
+  $0 \
+    --host ai-forge@10.10.10.20 \
+    --identity ~/graystone/ai-forge/secrets/ssh/id_ed25519_ai_forge
+USAGE
+    exit 2
+}
+
+HOST=""
+IDENTITY=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --host)
+            [[ $# -ge 2 ]] || usage
+            HOST="$2"
+            shift 2
+            ;;
+        --identity)
+            [[ $# -ge 2 ]] || usage
+            IDENTITY="$2"
+            shift 2
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+[[ -n "$HOST" ]] || usage
+[[ -n "$IDENTITY" ]] || usage
+
+IDENTITY="${IDENTITY/#\~/$HOME}"
+
+[[ -f "$IDENTITY" ]] || {
+    echo "ERROR: SSH identity not found: $IDENTITY" >&2
+    exit 1
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+AI_STORES="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+
+COMMON_CAPTURE="$AI_STORES/scripts/arch/pacman/capture"
+ROOT_DEPS="$MODULE_DIR/root-deps.txt"
+
+[[ -x "$COMMON_CAPTURE" ]] || {
+    echo "ERROR: Common Arch capture script not found." >&2
+    exit 1
+}
+
+[[ -s "$ROOT_DEPS" ]] || {
+    echo "ERROR: Playwright root dependencies not found." >&2
+    exit 1
+}
+
+SNAPSHOT="2026.09.29"
+RELEASE="2026.09.01"
+PLAYWRIGHT_VERSION="1.62.1"
+CONFIGURATION="arch-playwright-1.62.1"
+
+REMOTE_CAPTURE="/tmp/graystone-arch-pacman-capture"
+REMOTE_ROOTS="/tmp/graystone-playwright-root-deps.txt"
+REMOTE_OUT="/tmp/graystone-playwright-pacman"
+
+SSH=(
+    ssh
+    -i "$IDENTITY"
+    -o BatchMode=yes
+)
+
+SCP=(
+    scp
+    -i "$IDENTITY"
+    -o BatchMode=yes
+)
+
+echo "=== Graystone Playwright Arch dependency acquisition ==="
+echo "Host:          $HOST"
+echo "Release:       $RELEASE"
+echo "Snapshot:      $SNAPSHOT"
+echo "Playwright:    $PLAYWRIGHT_VERSION"
+echo
+
+echo "=== VALIDATING ACQUISITION HOST ==="
+
+"${SSH[@]}" "$HOST" '
+    set -e
+    [[ "$(uname -m)" == "x86_64" ]]
+    [[ -f /etc/arch-release ]]
+    command -v pacman >/dev/null
+'
+
+echo "Acquisition host: PASS"
+
+echo
+echo "=== STAGING ACQUISITION TOOLS ==="
+
+"${SCP[@]}" \
+    "$COMMON_CAPTURE" \
+    "$HOST:$REMOTE_CAPTURE"
+
+"${SCP[@]}" \
+    "$ROOT_DEPS" \
+    "$HOST:$REMOTE_ROOTS"
+
+echo
+echo "=== CAPTURING PACMAN DEPENDENCY REPOSITORY ==="
+
+"${SSH[@]}" -t "$HOST" \
+    "sudo '$REMOTE_CAPTURE' \
+        '$SNAPSHOT' \
+        '$REMOTE_OUT' \
+        '$REMOTE_ROOTS'"
+
+echo
+echo "=== VALIDATING REMOTE CAPTURE ==="
+
+"${SSH[@]}" "$HOST" \
+    "cd '$REMOTE_OUT' &&
+     sha256sum -c manifest/SHA256SUMS --quiet"
+
+REMOTE_META="$(
+    "${SSH[@]}" "$HOST" \
+        "cat '$REMOTE_OUT/manifest/capture.txt'"
+)"
+
+printf '%s\n' "$REMOTE_META"
+
+REQUESTED="$(
+    awk -F= '$1=="requested_package_count"{print $2}' \
+        <<< "$REMOTE_META"
+)"
+RESOLVED="$(
+    awk -F= '$1=="resolved_package_count"{print $2}' \
+        <<< "$REMOTE_META"
+)"
+PACKAGES="$(
+    awk -F= '$1=="package_count"{print $2}' \
+        <<< "$REMOTE_META"
+)"
+SIGNATURES="$(
+    awk -F= '$1=="signature_count"{print $2}' \
+        <<< "$REMOTE_META"
+)"
+
+EXPECTED_REQUESTED="$(
+    grep -Ev '^[[:space:]]*(#|$)' "$ROOT_DEPS" |
+        wc -l
+)"
+
+[[ "$REQUESTED" == "$EXPECTED_REQUESTED" ]] || {
+    echo "ERROR: Requested package count mismatch: expected $EXPECTED_REQUESTED; captured $REQUESTED" >&2
+    exit 1
+}
+
+[[ "$RESOLVED" == "$PACKAGES" ]] || {
+    echo "ERROR: Resolved/package count mismatch." >&2
+    exit 1
+}
+
+[[ "$PACKAGES" == "$SIGNATURES" ]] || {
+    echo "ERROR: Package/signature count mismatch." >&2
+    exit 1
+}
+
+CAPTURE_ID="$(date -u +%Y%m%dT%H%M%S.%6NZ)"
+
+STAGE="$AI_STORES/.staging/$CONFIGURATION/$CAPTURE_ID"
+DEST="$AI_STORES/vault/graystone/playwright/dependencies/$CONFIGURATION/$CAPTURE_ID"
+
+rm -rf "$STAGE"
+mkdir -p "$STAGE/pacman"
+
+echo
+echo "=== TRANSFERRING CAPTURE TO AI STORES ==="
+
+"${SSH[@]}" "$HOST" \
+    "cd '$REMOTE_OUT' && tar -cf - ." |
+tar -xf - -C "$STAGE/pacman"
+
+echo
+echo "=== VALIDATING STAGED CAPTURE ==="
+
+(
+    cd "$STAGE/pacman"
+    sha256sum -c manifest/SHA256SUMS --quiet
+)
+
+cp "$COMMON_CAPTURE" "$STAGE/capture"
+cp "$ROOT_DEPS" "$STAGE/root-deps.txt"
+
+cat > "$STAGE/capture.json" <<JSON
+{
+  "distribution": "arch",
+  "release": "$RELEASE",
+  "pacman_snapshot": "$SNAPSHOT",
+  "playwright_version": "$PLAYWRIGHT_VERSION",
+  "architecture": "x86_64",
+  "requested_packages": $REQUESTED,
+  "resolved_packages": $RESOLVED,
+  "repository": "pacman"
+}
+JSON
+
+[[ ! -e "$DEST" ]] || {
+    echo "ERROR: Capture destination already exists: $DEST" >&2
+    exit 1
+}
+
+mkdir -p "$(dirname "$DEST")"
+mv "$STAGE" "$DEST"
+
+echo
+echo "=== ACQUISITION COMPLETE ==="
+echo "Capture: $CAPTURE_ID"
+echo "Packages: $PACKAGES"
+echo "Location:"
+echo "  $DEST"
